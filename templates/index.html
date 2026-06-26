@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="hero">
+    <div>
+      <h1>Входящие письма</h1>
+      <p>Нажмите синхронизацию, чтобы получить обращения, адресованные на {{ config.support_address }}. Ответ создаётся отдельно внутри выбранного письма.</p>
+    </div>
+    <form method="post" action="{{ url_for('main.sync') }}">
+      <button type="submit">Синхронизировать почту</button>
+    </form>
+  </section>
+
+  <section class="settings-card">
+    <div>
+      <strong>Почта:</strong>
+      {% if config.mail_username %}
+        {{ config.mail_username }}
+      {% else %}
+        не настроена
+      {% endif %}
+    </div>
+    <div><strong>ИИ:</strong> {{ config.ai_provider }}</div>
+    <div><strong>Не отвечать от:</strong> {{ config.owner_email }}</div>
+  </section>
+
+  {% if messages %}
+    <section class="message-list">
+      {% for item in messages %}
+        <a class="message-card" href="{{ url_for('main.show_message', mail_id=item.mail_id) }}">
+          <div class="message-head">
+            <strong>{{ item.subject }}</strong>
+            <span>{{ item.sent_at }}</span>
+          </div>
+          <div class="sender">{{ item.sender }}</div>
+          <p>{{ item.preview }}{% if item.preview|length >= 350 %}...{% endif %}</p>
+          {% if item.category %}
+            <span class="badge category">{{ item.category_label }}</span>
+            {% if item.confidence %}
+              <span class="badge">уверенность {{ (item.confidence * 100)|round|int }}%</span>
+            {% endif %}
+          {% endif %}
+          {% if item.draft %}
+            <span class="badge ok">ответ готов</span>
+          {% elif item.generation_in_progress %}
+            <span class="badge running">ответ генерируется</span>
+          {% else %}
+            <span class="badge">без ответа</span>
+          {% endif %}
+        </a>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty">
+      <h2>Писем пока нет</h2>
+      <p>Заполните `.env`, запустите приложение и нажмите синхронизацию.</p>
+    </section>
+  {% endif %}
+{% endblock %}

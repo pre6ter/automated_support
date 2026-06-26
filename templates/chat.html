@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="hero">
+    <div>
+      <h1>Чат</h1>
+      <p>Задайте вопрос и получите ответ от выбранного AI-провайдера. История хранится только в текущей браузерной сессии.</p>
+    </div>
+    <form method="post" action="{{ url_for('main.chat_clear') }}">
+      <button type="submit" class="secondary">Очистить чат</button>
+    </form>
+  </section>
+
+  <section class="chat-panel">
+    <div class="chat-messages" id="chatMessages">
+      {% if messages %}
+          {% for message in messages %}
+            <article class="chat-message {{ message.role }}">
+              <div class="chat-role">
+                {% if message.role == "user" %}
+                  Вы
+                {% else %}
+                  Ассистент
+                  {% if message.provider and message.model %}
+                    <span class="muted">через {{ message.provider }} / {{ message.model }}</span>
+                  {% endif %}
+                {% endif %}
+              </div>
+              <div class="chat-content">{{ message.content|chat_markdown }}</div>
+              {% if message.attachments %}
+                <div class="attachments-list">
+                  {% for attachment in message.attachments %}
+                    <span class="badge">изображение: {{ attachment.filename }}</span>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              {% if message.sources %}
+                <details class="diagnostic-details">
+                  <summary>Диагностический контекст</summary>
+                  <ul>
+                    {% for source in message.sources %}
+                      <li><strong>{{ source.title }}</strong>: {{ source.summary }}</li>
+                    {% endfor %}
+                  </ul>
+                </details>
+              {% endif %}
+            </article>
+          {% endfor %}
+      {% else %}
+        <div class="empty chat-empty" id="chatEmpty">
+        <h2>История пуста</h2>
+        <p>Напишите первый вопрос ниже.</p>
+      </div>
+      {% endif %}
+    </div>
+
+    <form method="post" action="{{ url_for('main.chat_ask') }}" class="chat-form" enctype="multipart/form-data" id="chatForm">
+      <textarea name="question" rows="4" placeholder="Введите вопрос..." required autofocus></textarea>
+      <label class="file-input">
+        Скриншоты или изображения
+        <input type="file" name="images" accept="image/png,image/jpeg,image/gif,image/webp" multiple>
+      </label>
+      <button type="submit" id="chatSubmit">Отправить</button>
+    </form>
+  </section>
+
+  <script>
+    const chatForm = document.getElementById("chatForm");
+    const chatMessages = document.getElementById("chatMessages");
+    const chatSubmit = document.getElementById("chatSubmit");
+
+    const escapeHtml = (value) => String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+
+    const renderInlineMarkdown = (value) => escapeHtml(value)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+
+    const renderMarkdown = (value) => {
+      const lines = String(value || "").replaceAll("\r\n", "\n").split("\n");
+      const html = [];
+      let listItems = [];
+
+      const flushList = () => {
+        if (!listItems.length) return;
+        html.push(`<ol>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ol>`);
+        listItems = [];
+      };
+
+      for (const line of lines) {
+        const orderedMatch = line.match(/^\s*\d+[.)]\s+(.+)$/);
+        if (orderedMatch) {
+          listItems.push(orderedMatch[1]);
+          continue;
+        }
+
+        flushList();
+
+        if (!line.trim()) {
+          html.push("");
+          continue;
+        }
+        html.push(`<p>${renderInlineMarkdown(line)}</p>`);
+      }
+
+      flushList();
+      return html.join("");
+    };
+
+    document.querySelectorAll("[data-markdown]").forEach((node) => {
+      node.innerHTML = renderMarkdown(node.textContent || "");
+    });
+
+    const scrollToBottom = () => {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    };
+
+    const renderAttachments = (attachments = []) => {
+      if (!attachments.length) return "";
+      const badges = attachments
+        .map((attachment) => `<span class="badge">изображение: ${escapeHtml(attachment.filename)}</span>`)
+        .join("");
+      return `<div class="attachments-list">${badges}</div>`;
+    };
+
+    const renderSources = (sources = []) => {
+      if (!sources.length) return "";
+      const rows = sources
+        .map((source) => `<li><strong>${escapeHtml(source.title)}</strong>: ${escapeHtml(source.summary)}</li>`)
+        .join("");
+      return `<details class="diagnostic-details"><summary>Диагностический контекст</summary><ul>${rows}</ul></details>`;
+    };
+
+    const appendMessage = (message, extraClass = "") => {
+      document.getElementById("chatEmpty")?.remove();
+      const article = document.createElement("article");
+      article.className = `chat-message ${message.role} ${extraClass}`.trim();
+      const role = message.role === "user" ? "Вы" : "Ассистент";
+      const model = message.provider && message.model
+        ? ` <span class="muted">через ${escapeHtml(message.provider)} / ${escapeHtml(message.model)}</span>`
+        : "";
+      article.innerHTML = `
+        <div class="chat-role">${role}${model}</div>
+        <div class="chat-content">${renderMarkdown(message.content)}</div>
+        ${renderAttachments(message.attachments)}
+        ${renderSources(message.sources)}
+      `;
+      chatMessages.appendChild(article);
+      scrollToBottom();
+      return article;
+    };
+
+    chatForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(chatForm);
+      const question = String(formData.get("question") || "").trim();
+      if (!question) return;
+
+      const attachments = Array.from(chatForm.querySelector('input[name="images"]').files || [])
+        .map((file) => ({ filename: file.name }));
+      appendMessage({ role: "user", content: question, attachments });
+      const loadingMessage = appendMessage({ role: "assistant", content: "Думаю, собираю контекст из репозиториев, Grafana и dbhub..." }, "loading");
+
+      chatSubmit.disabled = true;
+      chatSubmit.textContent = "Ожидаю ответ...";
+
+      try {
+        const response = await fetch(chatForm.action, {
+          method: "POST",
+          body: formData,
+          headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error || "Не удалось получить ответ");
+        }
+        loadingMessage.remove();
+        appendMessage(payload.assistant);
+        chatForm.reset();
+      } catch (error) {
+        loadingMessage.classList.remove("loading");
+        loadingMessage.classList.add("failed");
+        loadingMessage.querySelector(".chat-content").textContent = error.message;
+      } finally {
+        chatSubmit.disabled = false;
+        chatSubmit.textContent = "Отправить";
+      }
+    });
+  </script>
+{% endblock %}

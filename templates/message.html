@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="message-detail">
+    <div class="detail-header">
+      <div>
+        <a href="{{ url_for('main.index') }}" class="back-link">← ко всем письмам</a>
+        <h1>{{ message.subject }}</h1>
+        <p class="muted">{{ message.sender }} · {{ message.sent_at }}</p>
+      </div>
+      <form method="post" action="{{ url_for('main.regenerate', mail_id=message.mail_id) }}">
+        <button type="submit" {% if message.generation_in_progress %}disabled{% endif %}>
+          {% if message.generation_in_progress %}
+            Генерация выполняется...
+          {% elif message.draft %}
+            Перегенерировать ответ
+          {% else %}
+            Сгенерировать ответ
+          {% endif %}
+        </button>
+      </form>
+    </div>
+
+    {% if message.generation_status %}
+      <section class="job-status {% if message.generation_in_progress %}running{% elif message.generation_status == 'failed' %}failed{% else %}done{% endif %}">
+        {% if message.generation_in_progress %}
+          Генерация ответа выполняется в фоне. Можно оставить страницу открытой, она обновится автоматически.
+        {% elif message.generation_status == "failed" %}
+          Не удалось сгенерировать ответ: {{ message.generation_error }}
+        {% elif message.generation_status == "succeeded" %}
+          Последняя генерация завершена.
+        {% endif %}
+      </section>
+    {% endif %}
+
+    <div class="columns">
+      <article class="panel">
+        <h2>Письмо</h2>
+        {% if message.attachments_list %}
+          <div class="attachments-list">
+            {% for attachment in message.attachments_list %}
+              <span class="badge">скриншот: {{ attachment.filename }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        <pre>{{ message.body }}</pre>
+      </article>
+
+      <article class="panel">
+        <h2>Предложенный ответ</h2>
+        {% if message.draft %}
+          <div class="diagnostic-summary">
+            <span class="badge category">{{ message.category_label }}</span>
+            <span class="badge">уверенность {{ (message.confidence * 100)|round|int }}%</span>
+            {% if message.probable_problem %}
+              <p><strong>Вероятная проблема:</strong> {{ message.probable_problem }}</p>
+            {% endif %}
+          </div>
+
+          {% if message.evidence_list or message.next_checks_list or message.sources_list %}
+            <details class="diagnostic-details" open>
+              <summary>Диагностика</summary>
+              {% if message.evidence_list %}
+                <h3>Основания</h3>
+                <ul>
+                  {% for item in message.evidence_list %}
+                    <li>{{ item }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+              {% if message.next_checks_list %}
+                <h3>Что проверить дальше</h3>
+                <ul>
+                  {% for item in message.next_checks_list %}
+                    <li>{{ item }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+              {% if message.sources_list %}
+                <h3>Источники</h3>
+                <ul>
+                  {% for source in message.sources_list %}
+                    <li><strong>{{ source.title }}</strong>: {{ source.summary }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+            </details>
+          {% endif %}
+
+          <textarea readonly>{{ message.draft }}</textarea>
+          <p class="muted">Сгенерировано через {{ message.provider }} / {{ message.model }}</p>
+        {% else %}
+          <p>Ответ ещё не создан.</p>
+        {% endif %}
+      </article>
+    </div>
+  </section>
+
+  {% if message.generation_in_progress %}
+    <script>
+      const statusUrl = "{{ url_for('main.generation_status', mail_id=message.mail_id) }}";
+      const pollGenerationStatus = async () => {
+        try {
+          const response = await fetch(statusUrl, { headers: { "Accept": "application/json" } });
+          const payload = await response.json();
+          if (!["queued", "running"].includes(payload.status)) {
+            window.location.reload();
+            return;
+          }
+        } catch (error) {
+          console.warn("Не удалось проверить статус генерации", error);
+        }
+        window.setTimeout(pollGenerationStatus, 2500);
+      };
+      window.setTimeout(pollGenerationStatus, 2500);
+    </script>
+  {% endif %}
+{% endblock %}
