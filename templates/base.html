@@ -8,12 +8,20 @@
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="{{ url_for('main.index') }}">Automated Support</a>
+      <a class="brand" href="{{ url_for('main.index') if g.user and g.user.role == 'admin' else url_for('main.chat') }}">Automated Support</a>
       <span class="muted">локальный помощник для ответов на письма</span>
-      <nav class="topnav">
-        <a href="{{ url_for('main.index') }}">Письма</a>
-        <a href="{{ url_for('main.chat') }}">Чат</a>
-      </nav>
+      {% if g.user %}
+        <nav class="topnav">
+          {% if g.user.role == "admin" %}
+            <a href="{{ url_for('main.index') }}">Письма</a>
+          {% endif %}
+          <a href="{{ url_for('main.chat') }}">Чат</a>
+          <form method="post" action="{{ url_for('main.logout') }}" class="inline-form">
+            <span class="muted">{{ g.user.username }} · {{ g.user.role }}</span>
+            <button type="submit" class="link-button">Выйти</button>
+          </form>
+        </nav>
+      {% endif %}
     </header>
 
     <main class="container">

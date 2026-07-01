@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="auth-card">
+    <h1>Вход</h1>
+    <p class="muted">Войдите под ролью admin для работы с письмами или user для доступа только к чату.</p>
+
+    <form method="post" action="{{ url_for('main.login') }}" class="auth-form">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <label class="form-field">
+        Логин
+        <input type="text" name="username" autocomplete="username" required autofocus>
+      </label>
+      <label class="form-field">
+        Пароль
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">Войти</button>
+    </form>
+  </section>
+{% endblock %}

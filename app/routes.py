@@ -1,10 +1,12 @@
 from pathlib import Path
+from functools import wraps
 
 from flask import (
     Blueprint,
     abort,
     current_app,
     flash,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -13,6 +15,7 @@ from flask import (
     session,
     url_for,
 )
+from werkzeug.security import check_password_hash
 
 from app.ai import generate_chat_answer
 from app.background_jobs import start_generation_job
@@ -20,9 +23,17 @@ from app.diagnostics import collect_chat_diagnostics
 from app.image_attachments import attachment_to_dict, infer_image_content_type, save_chat_uploads
 from app.mail_client import default_reply_recipients, fetch_recent_emails, is_message_eligible, parse_recipients, send_reply_email
 from app.storage import (
+    append_chat_message,
+    clear_chat_conversation,
+    create_chat_conversation,
     get_message_attachment,
+    get_chat_conversation,
     get_generation_job,
     get_message,
+    get_user,
+    get_user_by_username,
+    list_chat_conversations,
+    list_chat_messages,
     list_messages,
     save_suggestion_send_result,
     update_suggestion_draft,
@@ -30,10 +41,84 @@ from app.storage import (
 )
 
 bp = Blueprint("main", __name__)
-CHAT_HISTORY_KEY = "chat_messages"
+
+
+@bp.before_app_request
+def load_current_user() -> None:
+    g.user = None
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+
+    config = current_app.config["APP_CONFIG"]
+    try:
+        g.user = get_user(config.database_path, int(user_id))
+    except (TypeError, ValueError):
+        session.pop("user_id", None)
+    if not g.user:
+        session.pop("user_id", None)
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+        if not g.user:
+            if _wants_json():
+                return jsonify({"ok": False, "error": "Требуется авторизация."}), 401
+            return redirect(url_for("main.login", next=request.full_path))
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+def admin_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped_view(*args, **kwargs):
+        if g.user.get("role") != "admin":
+            if _wants_json():
+                return jsonify({"ok": False, "error": "Для этого раздела нужны права администратора."}), 403
+            flash("У вашей роли есть доступ только к чату.")
+            return redirect(url_for("main.chat"))
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+@bp.route("/login", methods=["GET", "POST"])
+def login():
+    config = current_app.config["APP_CONFIG"]
+    if g.user:
+        return redirect(_default_after_login())
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = get_user_by_username(config.database_path, username)
+        if user and check_password_hash(str(user.get("password_hash") or ""), password):
+            session.clear()
+            session["user_id"] = user["id"]
+            session.permanent = True
+            next_url = _safe_next_url(request.form.get("next"))
+            if user.get("role") == "user":
+                return redirect(url_for("main.chat"))
+            return redirect(next_url or url_for("main.index"))
+
+        flash("Неверный логин или пароль.")
+
+    return render_template("login.html", next_url=_safe_next_url(request.args.get("next")) or "")
+
+
+@bp.post("/logout")
+@login_required
+def logout():
+    session.clear()
+    flash("Вы вышли из системы.")
+    return redirect(url_for("main.login"))
 
 
 @bp.get("/")
+@admin_required
 def index():
     config = current_app.config["APP_CONFIG"]
     messages = [
@@ -45,12 +130,40 @@ def index():
 
 
 @bp.get("/chat")
+@login_required
 def chat():
     config = current_app.config["APP_CONFIG"]
-    return render_template("chat.html", config=config, messages=session.get(CHAT_HISTORY_KEY, []))
+    conversations = list_chat_conversations(config.database_path, g.user["id"])
+    selected_id = request.args.get("conversation_id", type=int)
+    current_conversation = None
+    if selected_id:
+        current_conversation = get_chat_conversation(config.database_path, selected_id, g.user["id"])
+    if not current_conversation and conversations:
+        current_conversation = conversations[0]
+
+    messages = []
+    if current_conversation:
+        messages = list_chat_messages(config.database_path, current_conversation["id"], g.user["id"])
+
+    return render_template(
+        "chat.html",
+        config=config,
+        messages=messages,
+        conversations=conversations,
+        current_conversation=current_conversation,
+    )
+
+
+@bp.post("/chat/new")
+@login_required
+def chat_new():
+    config = current_app.config["APP_CONFIG"]
+    conversation_id = create_chat_conversation(config.database_path, g.user["id"])
+    return redirect(url_for("main.chat", conversation_id=conversation_id))
 
 
 @bp.post("/chat")
+@login_required
 def chat_ask():
     config = current_app.config["APP_CONFIG"]
     question = request.form.get("question", "").strip()
@@ -60,7 +173,16 @@ def chat_ask():
         flash("Введите вопрос для чата.")
         return redirect(url_for("main.chat"))
 
-    messages = list(session.get(CHAT_HISTORY_KEY, []))
+    conversation_id = request.form.get("conversation_id", type=int)
+    current_conversation = None
+    if conversation_id:
+        current_conversation = get_chat_conversation(config.database_path, conversation_id, g.user["id"])
+    if not current_conversation:
+        conversation_id = create_chat_conversation(config.database_path, g.user["id"], question)
+    else:
+        conversation_id = current_conversation["id"]
+
+    messages = list_chat_messages(config.database_path, conversation_id, g.user["id"])
     try:
         images = [
             attachment_to_dict(attachment)
@@ -79,13 +201,26 @@ def chat_ask():
         display_sources = diagnostic_context.get("sources", [])
         user_message = {"role": "user", "content": question, "attachments": display_images, "sources": display_sources}
         assistant_message = {"role": "assistant", "content": answer, "provider": provider, "model": model}
-        messages.extend(
-            [
-                user_message,
-                assistant_message,
-            ]
+        saved_user_message = append_chat_message(
+            config.database_path,
+            conversation_id,
+            g.user["id"],
+            "user",
+            question,
+            attachments=display_images,
+            sources=display_sources,
         )
-        session[CHAT_HISTORY_KEY] = messages[-40:]
+        saved_assistant_message = append_chat_message(
+            config.database_path,
+            conversation_id,
+            g.user["id"],
+            "assistant",
+            answer,
+            provider=provider,
+            model=model,
+        )
+        user_message = saved_user_message or user_message
+        assistant_message = saved_assistant_message or assistant_message
     except Exception as exc:
         if _wants_json():
             return jsonify({"ok": False, "error": f"Не удалось получить ответ: {exc}"}), 500
@@ -93,15 +228,41 @@ def chat_ask():
         return redirect(url_for("main.chat"))
 
     if _wants_json():
-        return jsonify({"ok": True, "user": user_message, "assistant": assistant_message})
-    return redirect(url_for("main.chat"))
+        return jsonify(
+            {
+                "ok": True,
+                "conversation_id": conversation_id,
+                "user": user_message,
+                "assistant": assistant_message,
+            }
+        )
+    return redirect(url_for("main.chat", conversation_id=conversation_id))
 
 
 @bp.post("/chat/clear")
+@login_required
 def chat_clear():
-    session.pop(CHAT_HISTORY_KEY, None)
-    flash("История чата очищена.")
+    config = current_app.config["APP_CONFIG"]
+    conversation_id = request.form.get("conversation_id", type=int)
+    if conversation_id and clear_chat_conversation(config.database_path, conversation_id, g.user["id"]):
+        flash("История диалога очищена.")
+        return redirect(url_for("main.chat", conversation_id=conversation_id))
+
+    flash("Диалог не найден.")
     return redirect(url_for("main.chat"))
+
+
+def _default_after_login() -> str:
+    if g.user and g.user.get("role") == "admin":
+        return url_for("main.index")
+    return url_for("main.chat")
+
+
+def _safe_next_url(value: str | None) -> str:
+    next_url = str(value or "").strip()
+    if next_url.startswith("/") and not next_url.startswith("//"):
+        return next_url
+    return ""
 
 
 def _wants_json() -> bool:
@@ -109,6 +270,7 @@ def _wants_json() -> bool:
 
 
 @bp.post("/sync")
+@admin_required
 def sync():
     config = current_app.config["APP_CONFIG"]
     try:
@@ -121,6 +283,7 @@ def sync():
 
 
 @bp.get("/messages/<mail_id>")
+@admin_required
 def show_message(mail_id: str):
     config = current_app.config["APP_CONFIG"]
     message = get_message(config.database_path, mail_id)
@@ -136,6 +299,7 @@ def show_message(mail_id: str):
 
 
 @bp.get("/messages/<mail_id>/attachments/<int:attachment_id>")
+@admin_required
 def show_attachment(mail_id: str, attachment_id: int):
     config = current_app.config["APP_CONFIG"]
     message = get_message(config.database_path, mail_id)
@@ -159,6 +323,7 @@ def show_attachment(mail_id: str, attachment_id: int):
 
 
 @bp.post("/messages/<mail_id>/reply")
+@admin_required
 def update_reply(mail_id: str):
     config = current_app.config["APP_CONFIG"]
     message = get_message(config.database_path, mail_id)
@@ -208,6 +373,7 @@ def update_reply(mail_id: str):
 
 
 @bp.get("/messages/<mail_id>/generation-status")
+@admin_required
 def generation_status(mail_id: str):
     config = current_app.config["APP_CONFIG"]
     message = get_message(config.database_path, mail_id)
@@ -226,6 +392,7 @@ def generation_status(mail_id: str):
 
 
 @bp.post("/messages/<mail_id>/regenerate")
+@admin_required
 def regenerate(mail_id: str):
     config = current_app.config["APP_CONFIG"]
     message = get_message(config.database_path, mail_id)

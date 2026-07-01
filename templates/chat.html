@@ -4,15 +4,43 @@
   <section class="hero">
     <div>
       <h1>Чат</h1>
-      <p>Задайте вопрос и получите ответ от выбранного AI-провайдера. История хранится только в текущей браузерной сессии.</p>
+      <p>Задайте вопрос и получите ответ от выбранного AI-провайдера. Диалоги сохраняются в базе и доступны после повторного входа.</p>
     </div>
-    <form method="post" action="{{ url_for('main.chat_clear') }}">
-      <button type="submit" class="secondary">Очистить чат</button>
-    </form>
+    <div class="button-row">
+      <form method="post" action="{{ url_for('main.chat_new') }}">
+        <button type="submit">Новый диалог</button>
+      </form>
+      {% if current_conversation %}
+        <form method="post" action="{{ url_for('main.chat_clear') }}" id="clearChatForm">
+          <input type="hidden" name="conversation_id" value="{{ current_conversation.id }}">
+          <button type="submit" class="secondary">Очистить диалог</button>
+        </form>
+      {% endif %}
+    </div>
   </section>
 
-  <section class="chat-panel">
-    <div class="chat-messages" id="chatMessages">
+  <section class="chat-layout">
+    <aside class="chat-sidebar">
+      <h2>Диалоги</h2>
+      <div class="conversation-list" id="conversationList">
+        {% if conversations %}
+          {% for conversation in conversations %}
+            <a
+              class="conversation-link {% if current_conversation and conversation.id == current_conversation.id %}active{% endif %}"
+              href="{{ url_for('main.chat', conversation_id=conversation.id) }}"
+              data-conversation-id="{{ conversation.id }}"
+            >
+              {{ conversation.title }}
+            </a>
+          {% endfor %}
+        {% else %}
+          <p class="muted" id="conversationEmpty">Сохранённых диалогов пока нет.</p>
+        {% endif %}
+      </div>
+    </aside>
+
+    <div class="chat-panel">
+      <div class="chat-messages" id="chatMessages">
       {% if messages %}
           {% for message in messages %}
             <article class="chat-message {{ message.role }}">
@@ -52,22 +80,34 @@
         <p>Напишите первый вопрос ниже.</p>
       </div>
       {% endif %}
-    </div>
+      </div>
 
     <form method="post" action="{{ url_for('main.chat_ask') }}" class="chat-form" enctype="multipart/form-data" id="chatForm">
-      <textarea name="question" rows="4" placeholder="Введите вопрос..." required autofocus></textarea>
+      <input type="hidden" name="conversation_id" id="conversationId" value="{{ current_conversation.id if current_conversation else '' }}">
+      <textarea name="question" rows="4" placeholder="Введите вопрос..." required autofocus id="questionInput"></textarea>
       <label class="file-input">
         Скриншоты или изображения
-        <input type="file" name="images" accept="image/png,image/jpeg,image/gif,image/webp" multiple>
+        <span class="muted">Можно выбрать файлы или вставить картинку из буфера обмена прямо в поле вопроса.</span>
+        <input type="file" name="images" id="imagesInput" accept="image/png,image/jpeg,image/gif,image/webp" multiple>
       </label>
+      <div class="pasted-images" id="attachmentPreview" aria-live="polite"></div>
       <button type="submit" id="chatSubmit">Отправить</button>
     </form>
+    </div>
   </section>
 
   <script>
     const chatForm = document.getElementById("chatForm");
     const chatMessages = document.getElementById("chatMessages");
     const chatSubmit = document.getElementById("chatSubmit");
+    const questionInput = document.getElementById("questionInput");
+    const fileInput = document.getElementById("imagesInput");
+    const attachmentPreview = document.getElementById("attachmentPreview");
+    const conversationInput = document.getElementById("conversationId");
+    const clearChatForm = document.getElementById("clearChatForm");
+    const conversationList = document.getElementById("conversationList");
+    const chatUrl = "{{ url_for('main.chat') }}";
+    const selectedFiles = new DataTransfer();
 
     const escapeHtml = (value) => String(value)
       .replaceAll("&", "&amp;")
@@ -136,6 +176,77 @@
       return `<details class="diagnostic-details"><summary>Диагностический контекст</summary><ul>${rows}</ul></details>`;
     };
 
+    const extensionFor = (contentType) => ({
+      "image/gif": "gif",
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+    })[contentType] || "png";
+
+    const syncFiles = () => {
+      fileInput.files = selectedFiles.files;
+      renderSelectedFiles();
+    };
+
+    const addImageFiles = (files) => {
+      Array.from(files || [])
+        .filter((file) => file.type.startsWith("image/"))
+        .forEach((file, index) => {
+          const filename = file.name || `clipboard-${Date.now()}-${index + 1}.${extensionFor(file.type)}`;
+          const normalizedFile = file.name ? file : new File([file], filename, { type: file.type });
+          selectedFiles.items.add(normalizedFile);
+        });
+      syncFiles();
+    };
+
+    const removeSelectedFile = (indexToRemove) => {
+      const nextFiles = new DataTransfer();
+      Array.from(selectedFiles.files).forEach((file, index) => {
+        if (index !== indexToRemove) {
+          nextFiles.items.add(file);
+        }
+      });
+      selectedFiles.items.clear();
+      Array.from(nextFiles.files).forEach((file) => selectedFiles.items.add(file));
+      syncFiles();
+    };
+
+    const renderSelectedFiles = () => {
+      const files = Array.from(selectedFiles.files);
+      if (!files.length) {
+        attachmentPreview.innerHTML = "";
+        return;
+      }
+      attachmentPreview.innerHTML = files
+        .map((file, index) => `
+          <span class="badge pasted-image">
+            ${escapeHtml(file.name)}
+            <button type="button" data-remove-file="${index}" aria-label="Убрать изображение ${escapeHtml(file.name)}">×</button>
+          </span>
+        `)
+        .join("");
+    };
+
+    const ensureConversationInSidebar = (conversationId, title) => {
+      if (!conversationId) return;
+      document.getElementById("conversationEmpty")?.remove();
+      conversationList.querySelectorAll(".conversation-link").forEach((link) => link.classList.remove("active"));
+
+      let link = conversationList.querySelector(`[data-conversation-id="${conversationId}"]`);
+      if (!link) {
+        link = document.createElement("a");
+        link.className = "conversation-link";
+        link.dataset.conversationId = conversationId;
+        conversationList.prepend(link);
+      }
+
+      link.classList.add("active");
+      link.href = `${chatUrl}?conversation_id=${conversationId}`;
+      if (!link.textContent.trim() || link.textContent.trim() === "Новый диалог") {
+        link.textContent = title.slice(0, 80) || "Новый диалог";
+      }
+    };
+
     const appendMessage = (message, extraClass = "") => {
       document.getElementById("chatEmpty")?.remove();
       const article = document.createElement("article");
@@ -154,6 +265,27 @@
       scrollToBottom();
       return article;
     };
+
+    fileInput.addEventListener("change", () => {
+      addImageFiles(fileInput.files);
+    });
+
+    questionInput.addEventListener("paste", (event) => {
+      const imageFiles = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+      if (!imageFiles.length) return;
+
+      event.preventDefault();
+      addImageFiles(imageFiles);
+    });
+
+    attachmentPreview.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-remove-file]");
+      if (!button) return;
+      removeSelectedFile(Number(button.dataset.removeFile));
+    });
 
     chatForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -180,8 +312,17 @@
           throw new Error(payload.error || "Не удалось получить ответ");
         }
         loadingMessage.remove();
+        const activeConversationId = payload.conversation_id;
+        conversationInput.value = activeConversationId;
+        conversationInput.defaultValue = activeConversationId;
+        clearChatForm?.querySelector('input[name="conversation_id"]')?.setAttribute("value", activeConversationId);
+        ensureConversationInSidebar(activeConversationId, question);
+        window.history.replaceState({}, "", `${chatUrl}?conversation_id=${activeConversationId}`);
         appendMessage(payload.assistant);
         chatForm.reset();
+        conversationInput.value = activeConversationId;
+        selectedFiles.items.clear();
+        syncFiles();
       } catch (error) {
         loadingMessage.classList.remove("loading");
         loadingMessage.classList.add("failed");

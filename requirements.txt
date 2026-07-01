@@ -1,3 +1,4 @@
 Flask
+Werkzeug
 python-dotenv
 requests

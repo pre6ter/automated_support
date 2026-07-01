@@ -12,7 +12,21 @@ def create_app():
     app.config["APP_CONFIG"] = config
     app.jinja_env.filters["chat_markdown"] = _render_chat_markdown
 
-    init_db(config.database_path)
+    init_db(
+        config.database_path,
+        [
+            {
+                "username": config.auth_admin_username,
+                "password": config.auth_admin_password,
+                "role": "admin",
+            },
+            {
+                "username": config.auth_user_username,
+                "password": config.auth_user_password,
+                "role": "user",
+            },
+        ],
+    )
     app.register_blueprint(bp)
     app.register_blueprint(mcp_bp)
     return app
