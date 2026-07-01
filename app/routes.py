@@ -24,8 +24,10 @@ from app.image_attachments import attachment_to_dict, infer_image_content_type, 
 from app.mail_client import default_reply_recipients, fetch_recent_emails, is_message_eligible, parse_recipients, send_reply_email
 from app.storage import (
     append_chat_message,
+    approve_user,
     clear_chat_conversation,
     create_chat_conversation,
+    create_pending_user,
     get_message_attachment,
     get_chat_conversation,
     get_generation_job,
@@ -35,6 +37,7 @@ from app.storage import (
     list_chat_conversations,
     list_chat_messages,
     list_messages,
+    list_users_for_approval,
     save_suggestion_send_result,
     update_suggestion_draft,
     upsert_message,
@@ -57,6 +60,10 @@ def load_current_user() -> None:
         session.pop("user_id", None)
     if not g.user:
         session.pop("user_id", None)
+        return
+    if not g.user.get("is_approved"):
+        session.clear()
+        g.user = None
 
 
 def login_required(view):
@@ -96,6 +103,9 @@ def login():
         password = request.form.get("password", "")
         user = get_user_by_username(config.database_path, username)
         if user and check_password_hash(str(user.get("password_hash") or ""), password):
+            if not user.get("is_approved"):
+                flash("Аккаунт ожидает одобрения администратора.")
+                return render_template("login.html", next_url=_safe_next_url(request.form.get("next")) or "")
             session.clear()
             session["user_id"] = user["id"]
             session.permanent = True
@@ -107,6 +117,27 @@ def login():
         flash("Неверный логин или пароль.")
 
     return render_template("login.html", next_url=_safe_next_url(request.args.get("next")) or "")
+
+
+@bp.route("/register", methods=["GET", "POST"])
+def register():
+    config = current_app.config["APP_CONFIG"]
+    if g.user:
+        return redirect(_default_after_login())
+
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        password_confirm = request.form.get("password_confirm", "")
+        if password != password_confirm:
+            flash("Пароли не совпадают.")
+        else:
+            ok, message = create_pending_user(config.database_path, username, password)
+            flash(message)
+            if ok:
+                return redirect(url_for("main.login"))
+
+    return render_template("register.html")
 
 
 @bp.post("/logout")
@@ -127,6 +158,24 @@ def index():
         if is_message_eligible(config, message)
     ]
     return render_template("index.html", config=config, messages=messages)
+
+
+@bp.get("/admin/users")
+@admin_required
+def admin_users():
+    config = current_app.config["APP_CONFIG"]
+    return render_template("admin_users.html", users=list_users_for_approval(config.database_path))
+
+
+@bp.post("/admin/users/<int:user_id>/approve")
+@admin_required
+def approve_registered_user(user_id: int):
+    config = current_app.config["APP_CONFIG"]
+    if approve_user(config.database_path, user_id):
+        flash("Пользователь одобрен.")
+    else:
+        flash("Пользователь не найден.")
+    return redirect(url_for("main.admin_users"))
 
 
 @bp.get("/chat")

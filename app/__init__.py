@@ -20,11 +20,6 @@ def create_app():
                 "password": config.auth_admin_password,
                 "role": "admin",
             },
-            {
-                "username": config.auth_user_username,
-                "password": config.auth_user_password,
-                "role": "user",
-            },
         ],
     )
     app.register_blueprint(bp)

@@ -14,6 +14,7 @@
         <nav class="topnav">
           {% if g.user.role == "admin" %}
             <a href="{{ url_for('main.index') }}">Письма</a>
+            <a href="{{ url_for('main.admin_users') }}">Пользователи</a>
           {% endif %}
           <a href="{{ url_for('main.chat') }}">Чат</a>
           <form method="post" action="{{ url_for('main.logout') }}" class="inline-form">

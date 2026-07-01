@@ -9,8 +9,6 @@ class Config:
     flask_secret_key: str
     auth_admin_username: str
     auth_admin_password: str
-    auth_user_username: str
-    auth_user_password: str
     mail_host: str
     mail_port: int
     mail_username: str
@@ -82,8 +80,6 @@ def load_config() -> Config:
         flask_secret_key=os.getenv("FLASK_SECRET_KEY", "dev-secret-key"),
         auth_admin_username=os.getenv("AUTH_ADMIN_USERNAME", "admin").strip(),
         auth_admin_password=os.getenv("AUTH_ADMIN_PASSWORD", "admin"),
-        auth_user_username=os.getenv("AUTH_USER_USERNAME", "user").strip(),
-        auth_user_password=os.getenv("AUTH_USER_PASSWORD", "user"),
         mail_host=os.getenv("MAIL_HOST", "imap.yandex.com"),
         mail_port=int(os.getenv("MAIL_PORT", "993")),
         mail_username=mail_username,

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="auth-card">
+    <h1>Регистрация</h1>
+    <p class="muted">После регистрации аккаунт появится у администратора на одобрение. До одобрения вход в чат закрыт.</p>
+
+    <form method="post" action="{{ url_for('main.register') }}" class="auth-form">
+      <label class="form-field">
+        Логин
+        <input type="text" name="username" autocomplete="username" required autofocus>
+      </label>
+      <label class="form-field">
+        Пароль
+        <input type="password" name="password" autocomplete="new-password" minlength="6" required>
+      </label>
+      <label class="form-field">
+        Повторите пароль
+        <input type="password" name="password_confirm" autocomplete="new-password" minlength="6" required>
+      </label>
+      <button type="submit">Зарегистрироваться</button>
+    </form>
+    <p class="auth-switch">
+      Уже есть аккаунт? <a href="{{ url_for('main.login') }}">Войти</a>
+    </p>
+  </section>
+{% endblock %}

@@ -27,6 +27,8 @@ def init_db(database_path: Path, auth_users: list[dict[str, str]] | None = None)
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
+                is_approved INTEGER NOT NULL DEFAULT 0,
+                approved_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -109,6 +111,8 @@ def init_db(database_path: Path, auth_users: list[dict[str, str]] | None = None)
         _ensure_column(db, "suggestions", "reply_recipients", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "suggestions", "sent_at", "TEXT")
         _ensure_column(db, "suggestions", "sent_error", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "users", "is_approved", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(db, "users", "approved_at", "TEXT")
         _seed_auth_users(db, auth_users or [])
 
 
@@ -116,7 +120,7 @@ def get_user(database_path: Path, user_id: int) -> dict[str, Any] | None:
     with connect(database_path) as db:
         row = db.execute(
             """
-            SELECT id, username, password_hash, role
+            SELECT id, username, password_hash, role, is_approved, approved_at, created_at
             FROM users
             WHERE id = ?
             """,
@@ -129,13 +133,62 @@ def get_user_by_username(database_path: Path, username: str) -> dict[str, Any] |
     with connect(database_path) as db:
         row = db.execute(
             """
-            SELECT id, username, password_hash, role
+            SELECT id, username, password_hash, role, is_approved, approved_at, created_at
             FROM users
             WHERE username = ?
             """,
             (username,),
         ).fetchone()
         return dict(row) if row else None
+
+
+def create_pending_user(database_path: Path, username: str, password: str) -> tuple[bool, str]:
+    clean_username = username.strip()
+    if not clean_username:
+        return False, "Введите логин."
+    if len(clean_username) > 80:
+        return False, "Логин не должен быть длиннее 80 символов."
+    if len(password) < 6:
+        return False, "Пароль должен быть не короче 6 символов."
+
+    with connect(database_path) as db:
+        try:
+            db.execute(
+                """
+                INSERT INTO users (username, password_hash, role, is_approved)
+                VALUES (?, ?, 'user', 0)
+                """,
+                (clean_username, generate_password_hash(password)),
+            )
+        except sqlite3.IntegrityError:
+            return False, "Пользователь с таким логином уже существует."
+    return True, "Регистрация отправлена на одобрение администратору."
+
+
+def list_users_for_approval(database_path: Path) -> list[dict[str, Any]]:
+    with connect(database_path) as db:
+        rows = db.execute(
+            """
+            SELECT id, username, role, is_approved, approved_at, created_at
+            FROM users
+            WHERE role = 'user'
+            ORDER BY is_approved ASC, created_at DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def approve_user(database_path: Path, user_id: int) -> bool:
+    with connect(database_path) as db:
+        cursor = db.execute(
+            """
+            UPDATE users
+            SET is_approved = 1, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND role = 'user'
+            """,
+            (user_id,),
+        )
+        return cursor.rowcount > 0
 
 
 def list_chat_conversations(database_path: Path, user_id: int) -> list[dict[str, Any]]:
@@ -583,11 +636,13 @@ def _seed_auth_users(db: sqlite3.Connection, auth_users: list[dict[str, str]]) -
 
         db.execute(
             """
-            INSERT INTO users (username, password_hash, role)
-            VALUES (?, ?, ?)
+            INSERT INTO users (username, password_hash, role, is_approved, approved_at)
+            VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
             ON CONFLICT(username) DO UPDATE SET
                 password_hash = excluded.password_hash,
                 role = excluded.role,
+                is_approved = 1,
+                approved_at = COALESCE(users.approved_at, CURRENT_TIMESTAMP),
                 updated_at = CURRENT_TIMESTAMP
             """,
             (username, generate_password_hash(password), role),

@@ -397,6 +397,35 @@ input[type="password"] {
   margin-top: 22px;
 }
 
+.auth-switch {
+  margin: 18px 0 0;
+  text-align: center;
+}
+
+.auth-switch a {
+  color: var(--primary);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.user-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.user-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 12px 35px rgba(15, 23, 42, 0.06);
+  padding: 18px 20px;
+}
+
 .reply-form {
   display: grid;
   gap: 12px;

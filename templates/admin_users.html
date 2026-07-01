@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="hero">
+    <div>
+      <h1>Пользователи</h1>
+      <p>Новые регистрации получают роль user и смогут войти только после одобрения администратором.</p>
+    </div>
+  </section>
+
+  {% if users %}
+    <section class="user-list">
+      {% for user in users %}
+        <article class="user-card">
+          <div>
+            <strong>{{ user.username }}</strong>
+            <div class="muted">Зарегистрирован: {{ user.created_at }}</div>
+            {% if user.is_approved %}
+              <span class="badge ok">одобрен{% if user.approved_at %}: {{ user.approved_at }}{% endif %}</span>
+            {% else %}
+              <span class="badge running">ожидает одобрения</span>
+            {% endif %}
+          </div>
+          {% if not user.is_approved %}
+            <form method="post" action="{{ url_for('main.approve_registered_user', user_id=user.id) }}">
+              <button type="submit">Одобрить</button>
+            </form>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty">
+      <h2>Пользователей пока нет</h2>
+      <p>Здесь появятся аккаунты после регистрации.</p>
+    </section>
+  {% endif %}
+{% endblock %}
