@@ -3,8 +3,8 @@
 {% block content %}
   <section class="hero">
     <div>
-      <h1>Чат</h1>
-      <p>Задайте вопрос и получите ответ от выбранного AI-провайдера. Диалоги сохраняются в базе и доступны после повторного входа.</p>
+      <h1>Чат поддержки</h1>
+      <p>Опишите ситуацию, приложите скриншоты при необходимости и получите готовую подсказку для решения вопроса.</p>
     </div>
     <div class="button-row">
       <form method="post" action="{{ url_for('main.chat_new') }}">
@@ -48,10 +48,7 @@
                 {% if message.role == "user" %}
                   Вы
                 {% else %}
-                  Ассистент
-                  {% if message.provider and message.model %}
-                    <span class="muted">через {{ message.provider }} / {{ message.model }}</span>
-                  {% endif %}
+                  BAIER PRO
                 {% endif %}
               </div>
               <div class="chat-content">{{ message.content|chat_markdown }}</div>
@@ -62,7 +59,7 @@
                   {% endfor %}
                 </div>
               {% endif %}
-              {% if message.sources %}
+              {% if g.user.role == "admin" and message.sources %}
                 <details class="diagnostic-details">
                   <summary>Диагностический контекст</summary>
                   <ul>
@@ -107,6 +104,7 @@
     const clearChatForm = document.getElementById("clearChatForm");
     const conversationList = document.getElementById("conversationList");
     const chatUrl = "{{ url_for('main.chat') }}";
+    const isAdmin = {{ "true" if g.user.role == "admin" else "false" }};
     const selectedFiles = new DataTransfer();
 
     const escapeHtml = (value) => String(value)
@@ -169,6 +167,7 @@
     };
 
     const renderSources = (sources = []) => {
+      if (!isAdmin) return "";
       if (!sources.length) return "";
       const rows = sources
         .map((source) => `<li><strong>${escapeHtml(source.title)}</strong>: ${escapeHtml(source.summary)}</li>`)
@@ -251,12 +250,9 @@
       document.getElementById("chatEmpty")?.remove();
       const article = document.createElement("article");
       article.className = `chat-message ${message.role} ${extraClass}`.trim();
-      const role = message.role === "user" ? "Вы" : "Ассистент";
-      const model = message.provider && message.model
-        ? ` <span class="muted">через ${escapeHtml(message.provider)} / ${escapeHtml(message.model)}</span>`
-        : "";
+      const role = message.role === "user" ? "Вы" : "BAIER PRO";
       article.innerHTML = `
-        <div class="chat-role">${role}${model}</div>
+        <div class="chat-role">${role}</div>
         <div class="chat-content">${renderMarkdown(message.content)}</div>
         ${renderAttachments(message.attachments)}
         ${renderSources(message.sources)}
@@ -296,7 +292,7 @@
       const attachments = Array.from(chatForm.querySelector('input[name="images"]').files || [])
         .map((file) => ({ filename: file.name }));
       appendMessage({ role: "user", content: question, attachments });
-      const loadingMessage = appendMessage({ role: "assistant", content: "Думаю, собираю контекст из репозиториев, Grafana и dbhub..." }, "loading");
+      const loadingMessage = appendMessage({ role: "assistant", content: "Готовлю ответ..." }, "loading");
 
       chatSubmit.disabled = true;
       chatSubmit.textContent = "Ожидаю ответ...";

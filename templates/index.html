@@ -4,7 +4,7 @@
   <section class="hero">
     <div>
       <h1>Входящие письма</h1>
-      <p>Нажмите синхронизацию, чтобы получить обращения, адресованные на {{ config.support_address }}. Ответ создаётся отдельно внутри выбранного письма.</p>
+      <p>Обрабатывайте обращения клиентов в едином аккуратном рабочем пространстве. Новые письма появятся после синхронизации.</p>
     </div>
     <form method="post" action="{{ url_for('main.sync') }}">
       <button type="submit">Синхронизировать почту</button>
@@ -13,15 +13,15 @@
 
   <section class="settings-card">
     <div>
-      <strong>Почта:</strong>
+      <strong>Почтовый ящик:</strong>
       {% if config.mail_username %}
         {{ config.mail_username }}
       {% else %}
         не настроена
       {% endif %}
     </div>
-    <div><strong>ИИ:</strong> {{ config.ai_provider }}</div>
-    <div><strong>Не отвечать от:</strong> {{ config.owner_email }}</div>
+    <div><strong>Адрес поддержки:</strong> {{ config.support_address }}</div>
+    <div><strong>Служебный адрес:</strong> {{ config.owner_email }}</div>
   </section>
 
   {% if messages %}
@@ -53,7 +53,7 @@
   {% else %}
     <section class="empty">
       <h2>Писем пока нет</h2>
-      <p>Заполните `.env`, запустите приложение и нажмите синхронизацию.</p>
+      <p>Нажмите синхронизацию, чтобы загрузить новые обращения.</p>
     </section>
   {% endif %}
 {% endblock %}

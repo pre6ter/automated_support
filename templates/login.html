@@ -2,8 +2,12 @@
 
 {% block content %}
   <section class="auth-card">
-    <h1>Вход</h1>
-    <p class="muted">Войдите под ролью admin для работы с письмами или user для доступа только к чату.</p>
+    <div class="auth-brand">
+      <span class="brand-mark">B</span>
+      <strong>BAIER PRO</strong>
+    </div>
+    <h1>Добро пожаловать</h1>
+    <p class="muted">Войдите в аккаунт, чтобы продолжить работу с обращениями и чатом поддержки.</p>
 
     <form method="post" action="{{ url_for('main.login') }}" class="auth-form">
       <input type="hidden" name="next" value="{{ next_url }}">

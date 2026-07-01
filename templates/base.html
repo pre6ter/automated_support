@@ -3,13 +3,16 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Automated Support</title>
+    <title>BAIER PRO</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="{{ url_for('main.index') if g.user and g.user.role == 'admin' else url_for('main.chat') }}">Automated Support</a>
-      <span class="muted">локальный помощник для ответов на письма</span>
+      <a class="brand" href="{{ url_for('main.index') if g.user and g.user.role == 'admin' else url_for('main.chat') }}">
+        <span class="brand-mark">B</span>
+        <span>BAIER PRO</span>
+      </a>
+      <span class="topbar-subtitle">центр поддержки клиентов</span>
       {% if g.user %}
         <nav class="topnav">
           {% if g.user.role == "admin" %}
@@ -18,7 +21,7 @@
           {% endif %}
           <a href="{{ url_for('main.chat') }}">Чат</a>
           <form method="post" action="{{ url_for('main.logout') }}" class="inline-form">
-            <span class="muted">{{ g.user.username }} · {{ g.user.role }}</span>
+            <span class="user-chip">{{ g.user.username }}</span>
             <button type="submit" class="link-button">Выйти</button>
           </form>
         </nav>

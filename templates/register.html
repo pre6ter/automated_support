@@ -2,8 +2,12 @@
 
 {% block content %}
   <section class="auth-card">
+    <div class="auth-brand">
+      <span class="brand-mark">B</span>
+      <strong>BAIER PRO</strong>
+    </div>
     <h1>Регистрация</h1>
-    <p class="muted">После регистрации аккаунт появится у администратора на одобрение. До одобрения вход в чат закрыт.</p>
+    <p class="muted">Создайте аккаунт. После проверки доступа можно будет пользоваться чатом поддержки.</p>
 
     <form method="post" action="{{ url_for('main.register') }}" class="auth-form">
       <label class="form-field">
