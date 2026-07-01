@@ -2,6 +2,7 @@ def create_app():
     from flask import Flask
 
     from app.config import load_config
+    from app.mcp_server import mcp_bp
     from app.routes import bp
     from app.storage import init_db
 
@@ -13,6 +14,7 @@ def create_app():
 
     init_db(config.database_path)
     app.register_blueprint(bp)
+    app.register_blueprint(mcp_bp)
     return app
 
 

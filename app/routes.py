@@ -1,14 +1,31 @@
-from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, session, url_for
+from pathlib import Path
+
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
 
 from app.ai import generate_chat_answer
 from app.background_jobs import start_generation_job
 from app.diagnostics import collect_chat_diagnostics
-from app.image_attachments import attachment_to_dict, save_chat_uploads
-from app.mail_client import fetch_recent_emails, is_message_eligible
+from app.image_attachments import attachment_to_dict, infer_image_content_type, save_chat_uploads
+from app.mail_client import default_reply_recipients, fetch_recent_emails, is_message_eligible, parse_recipients, send_reply_email
 from app.storage import (
+    get_message_attachment,
     get_generation_job,
     get_message,
     list_messages,
+    save_suggestion_send_result,
+    update_suggestion_draft,
     upsert_message,
 )
 
@@ -114,7 +131,80 @@ def show_message(mail_id: str):
         flash("Для этого письма ответ не создаётся: оно не адресовано поддержке или отправлено вами.")
         return redirect(url_for("main.index"))
 
+    _fill_default_reply_recipients(config, message)
     return render_template("message.html", message=message)
+
+
+@bp.get("/messages/<mail_id>/attachments/<int:attachment_id>")
+def show_attachment(mail_id: str, attachment_id: int):
+    config = current_app.config["APP_CONFIG"]
+    message = get_message(config.database_path, mail_id)
+    if not message or not is_message_eligible(config, message):
+        abort(404)
+
+    attachment = get_message_attachment(config.database_path, mail_id, attachment_id)
+    if not attachment:
+        abort(404)
+
+    attachment_path = _safe_attachment_path(config.attachment_dir, attachment.get("path"))
+    if not attachment_path or not attachment_path.is_file():
+        abort(404)
+
+    return send_file(
+        attachment_path,
+        mimetype=infer_image_content_type(attachment) or attachment.get("content_type") or "application/octet-stream",
+        as_attachment=request.args.get("download") == "1",
+        download_name=attachment.get("filename") or attachment_path.name,
+    )
+
+
+@bp.post("/messages/<mail_id>/reply")
+def update_reply(mail_id: str):
+    config = current_app.config["APP_CONFIG"]
+    message = get_message(config.database_path, mail_id)
+    if not message:
+        flash("Письмо не найдено.")
+        return redirect(url_for("main.index"))
+    if not is_message_eligible(config, message):
+        flash("Для этого письма ответ не создаётся: оно не адресовано поддержке или отправлено вами.")
+        return redirect(url_for("main.index"))
+    if not message.get("draft"):
+        flash("Сначала сгенерируйте ответ.")
+        return redirect(url_for("main.show_message", mail_id=mail_id))
+
+    draft = request.form.get("draft", "").strip()
+    reply_recipients = request.form.get("reply_recipients", "").strip()
+    action = request.form.get("action", "save")
+
+    if not draft:
+        flash("Текст ответа не может быть пустым.")
+        return redirect(url_for("main.show_message", mail_id=mail_id))
+    if not reply_recipients:
+        flash("Укажите получателей ответа.")
+        return redirect(url_for("main.show_message", mail_id=mail_id))
+
+    try:
+        parse_recipients(reply_recipients)
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("main.show_message", mail_id=mail_id))
+
+    if not update_suggestion_draft(config.database_path, mail_id, draft, reply_recipients):
+        flash("Черновик не найден. Сгенерируйте ответ заново.")
+        return redirect(url_for("main.show_message", mail_id=mail_id))
+
+    if action == "send":
+        try:
+            send_reply_email(config, {**message, "draft": draft}, draft, reply_recipients)
+            save_suggestion_send_result(config.database_path, mail_id)
+            flash("Письмо отправлено.")
+        except Exception as exc:
+            save_suggestion_send_result(config.database_path, mail_id, str(exc))
+            flash(f"Не удалось отправить письмо: {exc}")
+    else:
+        flash("Правки сохранены.")
+
+    return redirect(url_for("main.show_message", mail_id=mail_id))
 
 
 @bp.get("/messages/<mail_id>/generation-status")
@@ -153,3 +243,46 @@ def regenerate(mail_id: str):
         flash("Генерация уже выполняется.")
 
     return redirect(url_for("main.show_message", mail_id=mail_id))
+
+
+def _safe_attachment_path(attachment_dir: Path, raw_path: object) -> Path | None:
+    if not raw_path:
+        return None
+
+    base_dir = attachment_dir.resolve()
+    path = Path(str(raw_path))
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(base_dir)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _fill_default_reply_recipients(config: object, message: dict[str, object]) -> None:
+    if message.get("reply_recipients"):
+        return
+
+    try:
+        message["reply_recipients"] = default_reply_recipients(
+            str(message.get("sender") or ""),
+            str(message.get("recipients") or ""),
+            _own_email_addresses(config),
+        )
+    except ValueError:
+        message["reply_recipients"] = str(message.get("sender") or "").strip()
+
+
+def _own_email_addresses(config: object) -> set[str]:
+    return {
+        str(address).strip().lower()
+        for address in (
+            getattr(config, "support_address", ""),
+            getattr(config, "mail_username", ""),
+            getattr(config, "smtp_username", ""),
+            getattr(config, "owner_email", ""),
+        )
+        if str(address).strip()
+    }

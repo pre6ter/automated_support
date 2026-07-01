@@ -11,11 +11,28 @@ from app.domain_knowledge import parse_offer_numbers
 from app.excel_inspector import inspect_buyerpro_excel_file
 from app.mcp_client import McpClient, load_mcp_server, mcp_text, validate_readonly_sql
 from app.repository_context import collect_repository_context, extract_search_terms
+from app.support_issue_parser import message_text_for_analysis
 from app.taxonomy import ProblemCategory, category_label, guess_category
 
 
+CONVERTER_UPLOAD_PROBLEM = "Проблема при загрузке в конвертер"
+CONVERTER_EXPORT_TEO_PROBLEM = "Проблема с выгрузкой в аксапту"
+CONVERTER_OTHER_PROBLEM = "Другое"
+EXPORT_TEO_TERMS = (
+    "exportteo",
+    "/exportteo",
+    "выгруз",
+    "аксапт",
+    "аксан",
+    "axapta",
+    "тэо",
+    "тео",
+    "teo",
+)
+
+
 def collect_diagnostics(config: Config, message: dict[str, Any]) -> dict[str, Any]:
-    preliminary_category = guess_category(message.get("subject", ""), message.get("body", ""))
+    preliminary_category = guess_category(message.get("subject", ""), message_text_for_analysis(message))
     code_context = collect_code_entity_context(config, message, preliminary_category)
     repository_context = collect_repository_context(config, message, preliminary_category)
     sources: list[dict[str, Any]] = [
@@ -27,8 +44,8 @@ def collect_diagnostics(config: Config, message: dict[str, Any]) -> dict[str, An
     dbhub_context = {"enabled": False, "summary": "MCP диагностика отключена."}
 
     if config.diagnostics_enabled:
-        grafana_context = collect_grafana_context(config, message, preliminary_category, code_context)
         dbhub_context = collect_dbhub_context(config, message, preliminary_category, code_context)
+        grafana_context = collect_grafana_context(config, message, preliminary_category, code_context, dbhub_context)
         sources.extend(
             [
                 _source("grafana", "Grafana logs", grafana_context),
@@ -91,8 +108,14 @@ def collect_grafana_context(
     message: dict[str, Any],
     category: ProblemCategory,
     code_context: dict[str, Any] | None = None,
+    dbhub_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    server = load_mcp_server(config.mcp_config_path, config.mcp_grafana_server)
+    server = load_mcp_server(
+        config.mcp_config_path,
+        config.mcp_grafana_server,
+        direct_url=config.mcp_grafana_url,
+        direct_headers=config.mcp_grafana_headers,
+    )
     if not server:
         return {"enabled": False, "summary": f"MCP server {config.mcp_grafana_server} не найден."}
 
@@ -102,10 +125,29 @@ def collect_grafana_context(
         if not datasource_uid:
             return {"enabled": True, "summary": "Loki datasource не найден."}
 
-        term = _best_log_term(message, category, code_context)
-        logql = _build_logql(config.mcp_grafana_logql_template, term)
-        end = datetime.now(UTC)
-        start = end - timedelta(minutes=config.mcp_log_lookback_minutes)
+        upload_log_focus = _converter_upload_log_focus(dbhub_context)
+        if upload_log_focus:
+            converter_ids = upload_log_focus["converter_ids"]
+            term = converter_ids[0]
+            logql = _build_converter_worker_logql(converter_ids)
+            log_focus = {
+                "problem": CONVERTER_UPLOAD_PROBLEM,
+                "endpoint": "upload/normal",
+                "containers": ["buyerproworker0", "buyerproworker1"],
+                "converter_ids": converter_ids,
+                "created_at_values": upload_log_focus.get("created_at_values", []),
+                "updated_at_values": upload_log_focus.get("updated_at_values", []),
+            }
+        else:
+            term = _best_log_term(message, category, code_context)
+            logql = _build_logql(config.mcp_grafana_logql_template, term)
+            log_focus = None
+        if upload_log_focus and upload_log_focus.get("start") and upload_log_focus.get("end"):
+            start = upload_log_focus["start"]
+            end = upload_log_focus["end"]
+        else:
+            end = datetime.now(UTC)
+            start = end - timedelta(minutes=config.mcp_log_lookback_minutes)
         result = client.call_tool(
             "query_loki_logs",
             {
@@ -113,15 +155,21 @@ def collect_grafana_context(
                 "logql": logql,
                 "startRfc3339": start.isoformat().replace("+00:00", "Z"),
                 "endRfc3339": end.isoformat().replace("+00:00", "Z"),
-                "limit": config.mcp_log_limit,
-                "direction": "backward",
+                "limit": max(config.mcp_log_limit, 40) if upload_log_focus else config.mcp_log_limit,
+                "direction": "forward" if upload_log_focus else "backward",
             },
         )
         return {
             "enabled": True,
             "datasourceUid": datasource_uid,
             "logql": logql,
-            "summary": mcp_text(result, limit=3500) or "Логи по запросу не найдены.",
+            "log_focus": log_focus,
+            "summary": (
+                _converter_upload_log_summary(result, converter_ids, limit=3500)
+                if upload_log_focus
+                else mcp_text(result, limit=3500)
+            )
+            or "Логи по запросу не найдены.",
         }
     except Exception as exc:
         return {"enabled": True, "summary": f"Grafana MCP недоступен или запрос не выполнен: {exc}"}
@@ -133,38 +181,26 @@ def collect_dbhub_context(
     category: ProblemCategory,
     code_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    server = load_mcp_server(config.mcp_config_path, config.mcp_dbhub_server)
+    server = load_mcp_server(
+        config.mcp_config_path,
+        config.mcp_dbhub_server,
+        direct_url=config.mcp_dbhub_url,
+        direct_headers=config.mcp_dbhub_headers,
+    )
     if not server:
         return {"enabled": False, "summary": f"MCP server {config.mcp_dbhub_server} не найден."}
 
     client = McpClient(server)
     terms = _diagnostic_terms(message, category, code_context)
-    object_results: list[dict[str, str]] = []
     offer_number_results: list[dict[str, str]] = []
     buyerpro_flow_results: list[dict[str, Any]] = []
     entity_data_results: list[dict[str, str]] = []
 
     try:
-        question_text = f"{message.get('subject', '')}\n{message.get('body', '')}"
+        question_text = message_text_for_analysis(message)
         offer_number_results = _collect_offer_number_context(client, question_text)
         buyerpro_flow_results = _collect_buyerpro_flow_context(config, client, question_text)
         entity_data_results = _collect_entity_data_context(client, question_text, code_context)
-
-        for term in terms:
-            pattern = f"%{_sql_like_term(term)}%"
-            for object_type in ("table", "column"):
-                result = client.call_tool(
-                    "search_objects_buyerpro",
-                    {
-                        "object_type": object_type,
-                        "pattern": pattern,
-                        "detail_level": "summary",
-                        "limit": 20,
-                    },
-                )
-                text = mcp_text(result, limit=1500)
-                if text:
-                    object_results.append({"term": term, "object_type": object_type, "result": text})
 
         return {
             "enabled": True,
@@ -173,7 +209,7 @@ def collect_dbhub_context(
             "offer_number_lookup": offer_number_results,
             "buyerpro_flow_lookup": buyerpro_flow_results,
             "entity_data_lookup": entity_data_results,
-            "summary": object_results or "Подходящие объекты БД по ключевым словам не найдены.",
+            "summary": "Автоматический schema search отключён; используйте agentic search_schema для точечного поиска.",
         }
     except Exception as exc:
         return {"enabled": True, "summary": f"dbhub MCP недоступен или запрос не выполнен: {exc}"}
@@ -181,39 +217,50 @@ def collect_dbhub_context(
 
 def execute_dbhub_select(config: Config, sql: str) -> str:
     safe_sql = validate_readonly_sql(sql)
-    server = load_mcp_server(config.mcp_config_path, config.mcp_dbhub_server)
+    server = load_mcp_server(
+        config.mcp_config_path,
+        config.mcp_dbhub_server,
+        direct_url=config.mcp_dbhub_url,
+        direct_headers=config.mcp_dbhub_headers,
+    )
     if not server:
         raise RuntimeError(f"MCP server {config.mcp_dbhub_server} не найден")
     client = McpClient(server)
     return mcp_text(client.call_tool("execute_sql_buyerpro", {"sql": safe_sql}), limit=6000)
 
 
-def _collect_offer_number_context(client: McpClient, text: str) -> list[dict[str, str]]:
-    results: list[dict[str, str]] = []
-    for brand_id, number, raw_value in parse_offer_numbers(text)[:3]:
+def _collect_offer_number_context(client: McpClient, text: str) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for brand_id, number, raw_value in _unique_offer_numbers(text):
         for label, sql in _offer_number_queries(brand_id, number):
             try:
                 result = client.call_tool("execute_sql_buyerpro", {"sql": validate_readonly_sql(sql)})
-                result_text = mcp_text(result, limit=2500)
+                compact_result = _compact_sql_result(result)
             except Exception as exc:
-                result_text = f"Не удалось выполнить read-only запрос: {exc}"
-            results.append({"offer_number": raw_value, "query": label, "result": result_text or "Записи не найдены."})
+                compact_result = {"error": f"Не удалось выполнить read-only запрос: {exc}"}
+            results.append({"offer_number": raw_value, "query": label, **compact_result})
     return results
 
 
 def _collect_buyerpro_flow_context(config: Config, client: McpClient, text: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     file_refs: list[dict[str, str]] = []
-    for brand_id, number, raw_value in parse_offer_numbers(text)[:3]:
+    converter_rows: list[dict[str, Any]] = []
+    offer_numbers = _unique_offer_numbers(text)
+    for brand_id, number, raw_value in offer_numbers:
         for label, sql in _buyerpro_flow_queries(brand_id, number):
             try:
                 result = client.call_tool("execute_sql_buyerpro", {"sql": validate_readonly_sql(sql)})
-                result_text = mcp_text(result, limit=3000)
+                compact_result = _compact_sql_result(result)
+                if label == "converter_status_for_offer_list":
+                    converter_rows.extend(compact_result.get("rows", []))
                 file_refs.extend(_extract_excel_file_refs(label, result))
             except Exception as exc:
-                result_text = f"Не удалось выполнить read-only запрос: {exc}"
-            results.append({"offer_number": raw_value, "query": label, "result": result_text or "Записи не найдены."})
+                compact_result = {"error": f"Не удалось выполнить read-only запрос: {exc}"}
+            results.append({"offer_number": raw_value, "query": label, **compact_result})
     results.extend(_inspect_excel_file_refs(config, file_refs))
+    if offer_numbers:
+        results.insert(0, _converter_problem_classification(text, converter_rows, results))
     return results
 
 
@@ -240,6 +287,129 @@ def _collect_entity_data_context(
                 result_text = f"Не удалось выполнить read-only запрос: {exc}"
             results.append({"entity": entity_key, "query": label, "result": result_text or "Записи не найдены."})
     return results
+
+
+def _unique_offer_numbers(text: str, *, limit: int = 3) -> list[tuple[int, int, str]]:
+    unique: list[tuple[int, int, str]] = []
+    seen: set[tuple[int, int]] = set()
+    for brand_id, number, raw_value in parse_offer_numbers(text):
+        key = (brand_id, number)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((brand_id, number, raw_value))
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _compact_sql_result(result: Any) -> dict[str, Any]:
+    payload = _maybe_json_payload(result)
+    if not isinstance(payload, dict):
+        text = mcp_text(result, limit=1200)
+        return {"rows": [], "count": 0, "summary": text or "Записи не найдены."}
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    raw_rows = data.get("rows") if isinstance(data, dict) else payload.get("rows")
+    rows = [row for row in raw_rows or [] if isinstance(row, dict)]
+    count = data.get("count") if isinstance(data, dict) else payload.get("count")
+    if count is None:
+        count = len(rows)
+    return {
+        "rows": rows[:10],
+        "count": count,
+        "summary": "Записи не найдены." if not rows else f"Найдено строк: {len(rows)}.",
+    }
+
+
+def _converter_problem_classification(
+    text: str,
+    converter_rows: list[dict[str, Any]],
+    flow_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    missing_local_file_rows = [
+        row
+        for row in converter_rows
+        if str(row.get("localFile") or row.get("local_file") or "").strip() == ""
+    ]
+    if missing_local_file_rows:
+        converter_ids = [str(row.get("id")) for row in missing_local_file_rows if row.get("id") is not None]
+        created_at_values = [
+            str(row.get("createdAt") or row.get("created_at"))
+            for row in missing_local_file_rows
+            if row.get("createdAt") or row.get("created_at")
+        ]
+        updated_at_values = [
+            str(row.get("updatedAt") or row.get("updated_at"))
+            for row in missing_local_file_rows
+            if row.get("updatedAt") or row.get("updated_at")
+        ]
+        return {
+            "query": "converter_problem_classification",
+            "problem_key": "converter_upload",
+            "problem_label": CONVERTER_UPLOAD_PROBLEM,
+            "endpoint": "upload/normal",
+            "evidence": [
+                "В записи Converter отсутствует localFile, значит файл предложения не был создан при загрузке.",
+            ],
+            "converter_ids": converter_ids,
+            "created_at_values": created_at_values,
+            "updated_at_values": updated_at_values,
+            "next_checks": [
+                "Проверить Loki/Grafana по Converter.id и error-строкам в контейнерах buyerproworker0 и buyerproworker1 в окне вокруг Converter.createdAt/updatedAt.",
+                "Искать ошибки backend-обработчика /buyerproback upload/normal.",
+            ],
+            "result": f"{CONVERTER_UPLOAD_PROBLEM}: localFile пустой; Converter.id={', '.join(converter_ids) or 'не найден'}.",
+        }
+
+    if _looks_like_export_teo_problem(text) or _has_excel_template_findings(flow_results):
+        return {
+            "query": "converter_problem_classification",
+            "problem_key": "converter_export_teo",
+            "problem_label": CONVERTER_EXPORT_TEO_PROBLEM,
+            "endpoint": "/exportteo",
+            "evidence": [
+                "Обращение похоже на проблему выгрузки в Аксапту/ТЭО или диагностика Excel нашла замечания.",
+            ],
+            "next_checks": [
+                "Скачать Converter.localFile и проверить лист `Шаблон`.",
+                "Сверить колонки листа `Шаблон` с `templates/template_check.xlsx`.",
+                "Проверить backend-эндпоинт /buyerproback /exportteo.",
+            ],
+            "result": f"{CONVERTER_EXPORT_TEO_PROBLEM}: проверить localFile и структуру листа `Шаблон`.",
+        }
+
+    return {
+        "query": "converter_problem_classification",
+        "problem_key": "converter_other",
+        "problem_label": CONVERTER_OTHER_PROBLEM,
+        "evidence": ["Не найдено признаков пустого localFile или проблемы выгрузки в Аксапту."],
+        "next_checks": ["Разобрать обращение по тексту письма и найденным данным Converter."],
+        "result": f"Проблематика Converter: {CONVERTER_OTHER_PROBLEM}.",
+    }
+
+
+def _looks_like_export_teo_problem(text: str) -> bool:
+    lowered = text.lower()
+    return any(term in lowered for term in EXPORT_TEO_TERMS)
+
+
+def _has_excel_template_findings(flow_results: list[dict[str, Any]]) -> bool:
+    for item in flow_results:
+        if item.get("query") != "excel_file_xml_inspection":
+            continue
+        result = item.get("result")
+        if not isinstance(result, dict):
+            continue
+        checks = result.get("download_teo_checks")
+        if not isinstance(checks, dict):
+            continue
+        for check in checks.get("checks") or []:
+            if not isinstance(check, dict) or check.get("name") != "source_template_reference_columns":
+                continue
+            if check.get("status") in {"failed", "warning"}:
+                return True
+    return False
 
 
 def _extract_lookup_identifiers(text: str) -> dict[str, list[str]]:
@@ -671,16 +841,8 @@ def _buyerpro_flow_queries(brand_id: int, number: int) -> list[tuple[str, str]]:
 
 
 def _extract_excel_file_refs(query_label: str, result: Any) -> list[dict[str, str]]:
-    payload = _maybe_json_payload(result)
-    if not isinstance(payload, dict):
-        return []
-
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    raw_rows = data.get("rows") if isinstance(data, dict) else payload.get("rows")
-    rows = [row for row in raw_rows or [] if isinstance(row, dict)]
-
     refs: list[dict[str, str]] = []
-    for row in rows:
+    for row in _rows_from_mcp_result(result):
         if query_label == "converter_status_for_offer_list":
             storage_path = str(row.get("localFile") or row.get("local_file") or "").strip()
             source = "Converter.localFile"
@@ -700,6 +862,16 @@ def _extract_excel_file_refs(query_label: str, result: Any) -> list[dict[str, st
                 }
             )
     return refs
+
+
+def _rows_from_mcp_result(result: Any) -> list[dict[str, Any]]:
+    payload = _maybe_json_payload(result)
+    if not isinstance(payload, dict):
+        return []
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    raw_rows = data.get("rows") if isinstance(data, dict) else payload.get("rows")
+    return [row for row in raw_rows or [] if isinstance(row, dict)]
 
 
 def _inspect_excel_file_refs(config: Config, file_refs: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -756,6 +928,74 @@ def _discover_loki_datasource(client: McpClient) -> str:
     return ""
 
 
+def _converter_upload_log_summary(result: Any, converter_ids: list[str], *, limit: int) -> str:
+    entries = _sorted_loki_log_entries(result)
+    if not entries:
+        return ""
+
+    start_index = _converter_upload_start_index(entries, converter_ids)
+    if start_index is None:
+        joined_ids = ", ".join(converter_ids)
+        return (
+            f"Стартовая строка загрузки предложения {joined_ids} не найдена в ответе Loki; "
+            "логи до фактического старта обработки не передаются модели."
+        )[:limit]
+
+    lines = [_format_loki_entry(entry) for entry in entries[start_index:]]
+    hints = _converter_upload_log_hints(lines)
+    return "\n".join([*hints, *lines]).strip()[:limit]
+
+
+def _converter_upload_log_hints(lines: list[str]) -> list[str]:
+    joined = "\n".join(lines).lower()
+    if "starting batch processing: 0 items" not in joined:
+        return []
+    return [
+        "Диагностический вывод: воркер прочитал XLSX, но не нашёл ни одной валидной строки для обработки "
+        "(`Starting batch processing: 0 items`). Вероятнее всего, нужно проверить структуру файла, "
+        "наименования обязательных колонок и заполнение обязательных полей.",
+        "",
+    ]
+
+
+def _sorted_loki_log_entries(result: Any) -> list[dict[str, Any]]:
+    payload = _maybe_json_payload(result)
+    if not isinstance(payload, dict):
+        return []
+    raw_entries = payload.get("data")
+    if not isinstance(raw_entries, list):
+        return []
+    entries = [entry for entry in raw_entries if isinstance(entry, dict) and entry.get("line")]
+    return sorted(entries, key=_loki_timestamp_sort_key)
+
+
+def _converter_upload_start_index(entries: list[dict[str, Any]], converter_ids: list[str]) -> int | None:
+    for index, entry in enumerate(entries):
+        line = _strip_ansi(str(entry.get("line") or "")).lower()
+        for converter_id in converter_ids:
+            if converter_id and re.search(rf"(?:начинаю|запускаю)\s+загрузк\w*\s+предложения\s+{re.escape(converter_id)}\b", line):
+                return index
+    return None
+
+
+def _loki_timestamp_sort_key(entry: dict[str, Any]) -> int:
+    raw_value = str(entry.get("timestamp") or "")
+    digits = re.sub(r"\D", "", raw_value)
+    return int(digits or 0)
+
+
+def _format_loki_entry(entry: dict[str, Any]) -> str:
+    labels = entry.get("labels") if isinstance(entry.get("labels"), dict) else {}
+    container = labels.get("container") or "unknown-container"
+    stream = labels.get("stream") or "unknown-stream"
+    line = _strip_ansi(str(entry.get("line") or "")).strip()
+    return f"[{container} {stream}] {line}"
+
+
+def _strip_ansi(value: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", value)
+
+
 def _maybe_json_payload(result: Any) -> Any:
     if isinstance(result, dict) and "content" in result:
         text = mcp_text(result, limit=20000)
@@ -797,6 +1037,65 @@ def _build_logql(template: str, term: str) -> str:
     return template.replace("{query}", escaped)
 
 
+def _build_converter_worker_logql(converter_ids: list[str]) -> str:
+    return '{container=~"buyerproworker0|buyerproworker1", env="prod"} != "Saved image"'
+
+
+def _converter_upload_log_converter_ids(dbhub_context: dict[str, Any] | None) -> list[str]:
+    focus = _converter_upload_log_focus(dbhub_context)
+    if not focus:
+        return []
+    return focus["converter_ids"]
+
+
+def _converter_upload_log_focus(dbhub_context: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(dbhub_context, dict):
+        return None
+    for item in dbhub_context.get("buyerpro_flow_lookup") or []:
+        if not isinstance(item, dict) or item.get("problem_key") != "converter_upload":
+            continue
+        converter_ids = [str(value) for value in item.get("converter_ids") or [] if value]
+        if not converter_ids:
+            return None
+        created_at_values = [str(value) for value in item.get("created_at_values") or [] if value]
+        updated_at_values = [str(value) for value in item.get("updated_at_values") or [] if value]
+        window = _converter_upload_log_window(created_at_values, updated_at_values)
+        return {
+            "converter_ids": converter_ids,
+            "created_at_values": created_at_values,
+            "updated_at_values": updated_at_values,
+            **window,
+        }
+    return None
+
+
+def _converter_upload_log_window(
+    created_at_values: list[str],
+    updated_at_values: list[str],
+) -> dict[str, datetime | None]:
+    created_values = [_parse_rfc3339(value) for value in created_at_values]
+    created_values = [value for value in created_values if value is not None]
+    updated_values = [_parse_rfc3339(value) for value in updated_at_values]
+    updated_values = [value for value in updated_values if value is not None]
+    if not created_values:
+        return {"start": None, "end": None}
+    end_base = max(updated_values) if updated_values else max(created_values) + timedelta(minutes=10)
+    return {
+        "start": min(created_values) - timedelta(minutes=1),
+        "end": end_base + timedelta(minutes=2),
+    }
+
+
+def _parse_rfc3339(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 def _sql_like_term(term: str) -> str:
     return term.replace("%", "\\%").replace("_", "\\_")[:80]
 
@@ -819,6 +1118,11 @@ def _compact_summary(payload: dict[str, Any]) -> str:
         return user_summary[:500]
     buyerpro_flow_lookup = payload.get("buyerpro_flow_lookup")
     if isinstance(buyerpro_flow_lookup, list) and buyerpro_flow_lookup:
+        for item in buyerpro_flow_lookup:
+            if isinstance(item, dict) and item.get("query") == "converter_problem_classification":
+                problem_label = item.get("problem_label")
+                if problem_label:
+                    return f"Проблематика Converter: {problem_label}."
         return f"Выполнен lookup flow Список предложений -> ТЭО: {len(buyerpro_flow_lookup)} read-only результатов."
     entity_data_lookup = payload.get("entity_data_lookup")
     if isinstance(entity_data_lookup, list) and entity_data_lookup:

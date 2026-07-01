@@ -4,54 +4,27 @@ from enum import Enum
 
 
 class ProblemCategory(str, Enum):
-    EXCEL = "excel"
-    SHAREPOINT = "sharepoint"
-    AXAPTA = "axapta"
-    BUYERPRO = "buyerpro"
-    INTEGRATIONS = "integrations"
+    CONVERTER_OFFERS = "converter_offers"
+    TEO_APPROVAL = "teo_approval"
     OTHER = "other"
 
 
 CATEGORY_LABELS: dict[ProblemCategory, str] = {
-    ProblemCategory.EXCEL: "Excel",
-    ProblemCategory.SHAREPOINT: "Sharepoint",
-    ProblemCategory.AXAPTA: "Аксапта",
-    ProblemCategory.BUYERPRO: "БайерПро",
-    ProblemCategory.INTEGRATIONS: "Интеграции",
+    ProblemCategory.CONVERTER_OFFERS: "Конвертер/Список предложений",
+    ProblemCategory.TEO_APPROVAL: "Согласование ТЭО",
     ProblemCategory.OTHER: "Другое",
 }
 
 
 CATEGORY_KEYWORDS: dict[ProblemCategory, tuple[str, ...]] = {
-    ProblemCategory.EXCEL: (
-        "excel",
-        "xlsx",
-        "xls",
-        "таблица",
-        "выгрузка",
-        "импорт",
-        "экспорт",
-        "файл",
-    ),
-    ProblemCategory.SHAREPOINT: (
-        "sharepoint",
-        "onedrive",
-        "teams",
-        "документ",
-        "ссылка",
-        "папка",
-        "доступ",
-    ),
-    ProblemCategory.AXAPTA: (
-        "axapta",
-        "аксапта",
-        "аксанта",
-        "dynamics",
-        "erp",
-        "заказ",
-        "номенклатура",
-    ),
-    ProblemCategory.BUYERPRO: (
+    ProblemCategory.CONVERTER_OFFERS: (
+        "конвертер",
+        "список предложений",
+        "номер предложения",
+        "предложение",
+        "converter",
+        "brandid",
+        "converter_id",
         "buyerpro",
         "байерпро",
         "buyer pro",
@@ -59,16 +32,33 @@ CATEGORY_KEYWORDS: dict[ProblemCategory, tuple[str, ...]] = {
         "market.famil",
         "кабинет",
         "поставщик",
+        "excel",
+        "xlsx",
+        "xls",
+        "выгрузка",
+        "импорт",
+        "экспорт",
+        "файл",
     ),
-    ProblemCategory.INTEGRATIONS: (
-        "интеграция",
-        "интеграции",
-        "api",
-        "обмен",
-        "синхронизация",
-        "webhook",
-        "endpoint",
-        "ошибка обмена",
+    ProblemCategory.TEO_APPROVAL: (
+        "согласование тэо",
+        "согласование тео",
+        "тэо",
+        "тео",
+        "на согласовании",
+        "ожидает согласования",
+        "согласование",
+        "согласовать",
+        "согласующий",
+        "доработке",
+        "заявка на закупку",
+        "purch_req_request",
+        "acsapta_teo",
+        "acsaptateo",
+        "approve",
+        "approval",
+        "approver",
+        "permission_rule",
     ),
 }
 
@@ -79,20 +69,21 @@ def normalize_category(value: str | None) -> ProblemCategory:
 
     normalized = value.strip().lower().replace("-", "_")
     aliases = {
-        "excel": ProblemCategory.EXCEL,
-        "эксель": ProblemCategory.EXCEL,
-        "sharepoint": ProblemCategory.SHAREPOINT,
-        "share_point": ProblemCategory.SHAREPOINT,
-        "аксапта": ProblemCategory.AXAPTA,
-        "аксанта": ProblemCategory.AXAPTA,
-        "axapta": ProblemCategory.AXAPTA,
-        "байерпро": ProblemCategory.BUYERPRO,
-        "buyerpro": ProblemCategory.BUYERPRO,
-        "buyer_pro": ProblemCategory.BUYERPRO,
-        "интеграции": ProblemCategory.INTEGRATIONS,
-        "интеграция": ProblemCategory.INTEGRATIONS,
-        "integrations": ProblemCategory.INTEGRATIONS,
-        "integration": ProblemCategory.INTEGRATIONS,
+        "конвертер": ProblemCategory.CONVERTER_OFFERS,
+        "список предложений": ProblemCategory.CONVERTER_OFFERS,
+        "конвертер/список предложений": ProblemCategory.CONVERTER_OFFERS,
+        "converter": ProblemCategory.CONVERTER_OFFERS,
+        "converter_offers": ProblemCategory.CONVERTER_OFFERS,
+        "offers": ProblemCategory.CONVERTER_OFFERS,
+        "buyerpro": ProblemCategory.CONVERTER_OFFERS,
+        "buyer_pro": ProblemCategory.CONVERTER_OFFERS,
+        "байерпро": ProblemCategory.CONVERTER_OFFERS,
+        "согласование тэо": ProblemCategory.TEO_APPROVAL,
+        "согласование тео": ProblemCategory.TEO_APPROVAL,
+        "teo_approval": ProblemCategory.TEO_APPROVAL,
+        "teo": ProblemCategory.TEO_APPROVAL,
+        "тэо": ProblemCategory.TEO_APPROVAL,
+        "тео": ProblemCategory.TEO_APPROVAL,
         "другое": ProblemCategory.OTHER,
         "other": ProblemCategory.OTHER,
     }

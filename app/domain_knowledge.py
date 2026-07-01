@@ -31,7 +31,9 @@ BUYERPRO_FLOW_TERMS = (
 
 
 DOMAIN_DEFINITIONS = (
-    "Номер предложения: два числа, разделённые точкой или запятой, например 12177.9 или 12177,9. "
+    "Номер предложения: два числа, разделённые точкой или запятой, например 12177.9 или 12177,9, "
+    "только если пользователь явно пишет о предложении/номере предложения или рядом нет другого смысла числа. "
+    "Не считай номером предложения значения товарной группы, сезона, размера, строки или колонки. "
     "В системе это соответствует паре полей Converter.brandId + Converter.number. "
     "В разных таблицах эта связь может называться converter_id или похожими комбинациями, "
     "например в purch_req_request или production_order.\n"
@@ -39,6 +41,19 @@ DOMAIN_DEFINITIONS = (
     "API /buyerpro/converter/* и backend /api/v2/buyerpro/converter/*. Выгрузка в Аксапту и создание "
     "черновика ТЭО начинаются из этого раздела; важные поля Converter: status, teostatus, teoerror, "
     "ax_status, teoNum, exportId, userId, authorId, disabled.\n"
+    "Товарная группа, категория, ТГ, category, tg и category_id — близкие понятия: обычно это разные "
+    "пользовательские и технические названия классификации товара/группы товара. При поиске по коду, "
+    "БД и логам используй эти термины как взаимосвязанные подсказки.\n"
+    "Для категории «Конвертер/Список предложений» разделяй проблематику так: "
+    "1) «Проблема при загрузке в конвертер» — в Converter отсутствует localFile, файл не создался "
+    "на backend endpoint upload/normal; нужно смотреть логи по Converter.id в buyerproworker0 или "
+    "buyerproworker1. 2) «Проблема с выгрузкой в аксапту» — связана с backend endpoint /exportteo; "
+    "нужно скачать Converter.localFile и проверить содержимое, особенно колонки листа «Шаблон» "
+    "относительно templates/template_check.xlsx. 3) «Другое» — если нет признаков первых двух случаев.\n"
+    "Если в логах upload/normal есть `Starting batch processing: 0 items`, это означает, что воркер "
+    "прочитал XLSX, но не нашёл валидных строк для обработки. В таком случае в ответе проси проверить "
+    "структуру файла, наименования обязательных колонок и заполнение обязательных полей; не называй "
+    "`ENOENT unlink` основной причиной, если он появился уже на cleanup.\n"
     "Раздел «ТЭО на согласовании» продолжает converter flow через Converter.exportId или converter_id "
     "в purch_req_request. Важные таблицы: purch_req_request для статуса created/wait/reviewed/"
     "rejected/approved/revoked, acsapta_teo_approve для согласования дирекций и AcsaptaTeoComment "
@@ -87,12 +102,52 @@ def parse_offer_numbers(text: str) -> list[tuple[int, int, str]]:
 
 
 def _has_offer_number_context(text: str) -> bool:
-    lowered = text.lower()
-    if "номер предложения" in lowered or "предложени" in lowered or "converter_id" in lowered:
-        return True
     return bool(_extract_offer_numbers(text))
 
 
 def _extract_offer_numbers(text: str) -> list[str]:
-    return re.findall(r"\b\d{2,}[,.]\d+\b", text)
+    values: list[str] = []
+    for match in re.finditer(r"(?<![\d,.])\d{2,}[,.]\d+(?![\d,.])", text):
+        if _has_non_offer_number_context(text, match.start(), match.end()):
+            continue
+        if not _has_local_offer_number_context(text, match.start(), match.end()):
+            continue
+        values.append(match.group(0))
+    return values
+
+
+def _has_local_offer_number_context(text: str, start: int, end: int) -> bool:
+    before = text[max(0, start - 70) : start].lower()
+    after = text[end : min(len(text), end + 40)].lower()
+    window = f"{before} {after}"
+    offer_markers = (
+        "номер предложения",
+        "№ предложения",
+        "n предложения",
+        "предложени",
+        "converter_id",
+        "converter",
+        "brandid",
+        "brand_id",
+        "список предложений",
+    )
+    return any(marker in window for marker in offer_markers)
+
+
+def _has_non_offer_number_context(text: str, start: int, end: int) -> bool:
+    window = (text[max(0, start - 45) : start] + " " + text[end : min(len(text), end + 15)]).lower()
+    non_offer_markers = (
+        "товарн",
+        "тг",
+        "группа",
+        "сезон",
+        "сезона",
+        "сезоне",
+        "размер",
+        "количество",
+        "строк",
+        "строке",
+        "колонк",
+    )
+    return any(marker in window for marker in non_offer_markers)
 

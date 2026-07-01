@@ -7,6 +7,7 @@ from typing import Any
 
 from app.config import Config
 from app.repository_context import extract_search_terms, search_repository_paths
+from app.support_issue_parser import message_text_for_analysis
 from app.taxonomy import ProblemCategory
 
 
@@ -27,7 +28,18 @@ ENTITY_RULES = (
         key="offer",
         user_label="предложение",
         db_terms=("Converter", "brandId", "number", "converter_id", "exportId", "teostatus", "teoerror", "purch_req_request", "production_order"),
-        code_terms=("номер предложения", "список предложений", "предложение", "converter", "exportteo", "createteo", "converter_id", "brandId", "production_order"),
+        code_terms=(
+            "номер предложения",
+            "список предложений",
+            "предложение",
+            "converter",
+            "upload/normal",
+            "exportteo",
+            "createteo",
+            "converter_id",
+            "brandId",
+            "production_order",
+        ),
     ),
     EntityRule(
         key="teo_approval",
@@ -153,7 +165,7 @@ def _entity_terms(text: str) -> list[str]:
 def _combined_text(message: dict[str, Any], matches: list[dict[str, Any]]) -> str:
     match_text = "\n".join(str(match.get("text", "")) for match in matches)
     paths = "\n".join(str(match.get("path", "")) for match in matches)
-    return f"{message.get('subject', '')}\n{message.get('body', '')}\n{paths}\n{match_text}"
+    return f"{message_text_for_analysis(message)}\n{paths}\n{match_text}"
 
 
 def _unique_terms(terms: list[str]) -> list[str]:

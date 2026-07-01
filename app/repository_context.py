@@ -8,6 +8,7 @@ from typing import Any
 
 from app.config import Config
 from app.domain_knowledge import offer_number_terms
+from app.support_issue_parser import message_text_for_analysis
 from app.taxonomy import CATEGORY_KEYWORDS, ProblemCategory, normalize_category
 
 
@@ -57,7 +58,7 @@ def search_repository_paths(repository_paths: tuple[Path, ...], terms: list[str]
 
 def extract_search_terms(message: dict[str, Any], category: ProblemCategory | str) -> list[str]:
     normalized_category = normalize_category(category.value if isinstance(category, ProblemCategory) else category)
-    text = f"{message.get('subject', '')}\n{message.get('body', '')}"
+    text = message_text_for_analysis(message)
     terms: list[str] = []
 
     terms.extend(offer_number_terms(text))

@@ -1,15 +1,17 @@
 import hashlib
 import imaplib
 import re
+import smtplib
 from dataclasses import dataclass, field
+from email.message import EmailMessage
 from email import message_from_bytes
 from email.header import decode_header
 from email.message import Message
-from email.utils import getaddresses, parsedate_to_datetime
+from email.utils import formataddr, getaddresses, parsedate_to_datetime
 from html.parser import HTMLParser
 
 from app.config import Config
-from app.image_attachments import attachment_to_dict, save_email_images
+from app.image_attachments import attachment_to_dict, save_email_attachments
 
 
 @dataclass(frozen=True)
@@ -76,14 +78,14 @@ def fetch_recent_emails(config: Config) -> list[IncomingEmail]:
             sent_at = _format_date(parsed.get("Date", ""))
             message_id = parsed.get("Message-ID", "")
             mail_id = _stable_mail_id(config.mail_username, message_id, sender, subject, sent_at)
-            image_parts = _extract_image_parts(parsed)
+            attachment_parts = _extract_attachment_parts(parsed)
             attachments = [
                 attachment_to_dict(attachment)
-                for attachment in save_email_images(
+                for attachment in save_email_attachments(
                     config.attachment_dir,
                     mail_id,
-                    image_parts,
-                    config.max_image_attachment_bytes,
+                    attachment_parts,
+                    config.max_email_attachment_bytes,
                 )
             ]
 
@@ -100,6 +102,63 @@ def fetch_recent_emails(config: Config) -> list[IncomingEmail]:
             )
 
         return emails
+
+
+def send_reply_email(config: Config, message: dict[str, object], draft: str, recipients: str) -> None:
+    if not config.smtp_username or not config.smtp_password:
+        raise RuntimeError("SMTP_USERNAME/SMTP_PASSWORD или MAIL_USERNAME/MAIL_PASSWORD должны быть заданы в .env")
+
+    parsed_recipients = parse_recipients(recipients)
+    if not parsed_recipients:
+        raise ValueError("Укажите хотя бы одного получателя.")
+
+    email = EmailMessage()
+    email["From"] = formataddr((config.owner_name, config.smtp_username)) if config.owner_name else config.smtp_username
+    email["To"] = ", ".join(_format_recipient(name, address) for name, address in parsed_recipients)
+    email["Subject"] = _reply_subject(str(message.get("subject") or ""))
+    email.set_content(draft)
+
+    to_addresses = [address for _, address in parsed_recipients]
+    if config.smtp_use_ssl:
+        with smtplib.SMTP_SSL(config.smtp_host, config.smtp_port, timeout=30) as client:
+            client.login(config.smtp_username, config.smtp_password)
+            client.send_message(email, from_addr=config.smtp_username, to_addrs=to_addresses)
+    else:
+        with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=30) as client:
+            client.starttls()
+            client.login(config.smtp_username, config.smtp_password)
+            client.send_message(email, from_addr=config.smtp_username, to_addrs=to_addresses)
+
+
+def parse_recipients(value: str) -> list[tuple[str, str]]:
+    recipients: list[tuple[str, str]] = []
+    for name, address in getaddresses([_decode_header_value(value)]):
+        address = address.strip()
+        if not address:
+            continue
+        if "@" not in address:
+            raise ValueError(f"Некорректный email получателя: {address}")
+        recipients.append((name.strip(), address))
+    if value.strip() and not recipients:
+        raise ValueError("Не удалось распознать email получателя.")
+    return recipients
+
+
+def default_reply_recipients(
+    sender: str,
+    recipients: str = "",
+    exclude_addresses: set[str] | None = None,
+) -> str:
+    excluded = {address.lower() for address in exclude_addresses or set() if address}
+    seen: set[str] = set()
+    reply_all: list[tuple[str, str]] = []
+    for name, address in [*parse_recipients(sender), *parse_recipients(recipients)]:
+        normalized = address.lower()
+        if normalized in excluded or normalized in seen:
+            continue
+        seen.add(normalized)
+        reply_all.append((name, address))
+    return ", ".join(_format_recipient(name, address) for name, address in reply_all)
 
 
 def _first_message_bytes(data: list[bytes | tuple[bytes, bytes]]) -> bytes | None:
@@ -166,24 +225,28 @@ def _extract_body(message: Message) -> str:
     return _clean_text("\n\n".join(_html_to_text(part) for part in html_parts))
 
 
-def _extract_image_parts(message: Message) -> list[dict[str, object]]:
+def _extract_attachment_parts(message: Message) -> list[dict[str, object]]:
     parts = message.walk() if message.is_multipart() else [message]
-    images: list[dict[str, object]] = []
+    attachments: list[dict[str, object]] = []
     for part in parts:
-        if part.get_content_maintype() != "image":
+        if part.get_content_maintype() == "multipart":
             continue
+        content_disposition = (part.get_content_disposition() or "").lower()
+        filename = part.get_filename()
+        if not filename and content_disposition != "attachment" and part.get_content_maintype() != "image":
+            continue
+
         payload = part.get_payload(decode=True)
         if not payload:
             continue
-        filename = part.get_filename()
-        images.append(
+        attachments.append(
             {
                 "filename": _decode_header_value(filename) if filename else "",
                 "content_type": part.get_content_type(),
                 "payload": payload,
             }
         )
-    return images
+    return attachments
 
 
 def _append_decoded_part(part: Message, plain_parts: list[str], html_parts: list[str]) -> None:
@@ -224,3 +287,12 @@ def _format_date(value: str) -> str:
 def _stable_mail_id(account: str, message_id: str, sender: str, subject: str, sent_at: str) -> str:
     source = "|".join([account, message_id, sender, subject, sent_at])
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
+
+
+def _format_recipient(name: str, address: str) -> str:
+    return f"{name} <{address}>" if name else address
+
+
+def _reply_subject(subject: str) -> str:
+    stripped = subject.strip() or "(без темы)"
+    return stripped if stripped.lower().startswith("re:") else f"Re: {stripped}"

@@ -109,7 +109,16 @@ class McpClient:
         return response
 
 
-def load_mcp_server(config_path: Path, server_name: str) -> McpServerConfig | None:
+def load_mcp_server(
+    config_path: Path,
+    server_name: str,
+    *,
+    direct_url: str = "",
+    direct_headers: dict[str, str] | None = None,
+) -> McpServerConfig | None:
+    if direct_url:
+        return McpServerConfig(name=server_name, url=direct_url, headers=direct_headers or {})
+
     if not config_path.exists():
         return None
 

@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from app.image_attachments import format_size, is_image_attachment
 from app.mail_client import IncomingEmail
 from app.taxonomy import category_label
 
@@ -34,6 +35,9 @@ def init_db(database_path: Path) -> None:
                 draft TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 model TEXT NOT NULL,
+                reply_recipients TEXT NOT NULL DEFAULT '',
+                sent_at TEXT,
+                sent_error TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (mail_id) REFERENCES messages(mail_id) ON DELETE CASCADE
             );
@@ -68,6 +72,9 @@ def init_db(database_path: Path) -> None:
         _ensure_column(db, "suggestions", "evidence", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(db, "suggestions", "next_checks", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(db, "suggestions", "sources", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(db, "suggestions", "reply_recipients", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(db, "suggestions", "sent_at", "TEXT")
+        _ensure_column(db, "suggestions", "sent_error", "TEXT NOT NULL DEFAULT ''")
 
 
 def upsert_message(database_path: Path, email: IncomingEmail) -> bool:
@@ -161,6 +168,42 @@ def save_suggestion(
         )
 
 
+def update_suggestion_draft(database_path: Path, mail_id: str, draft: str, reply_recipients: str) -> bool:
+    with connect(database_path) as db:
+        cursor = db.execute(
+            """
+            UPDATE suggestions
+            SET draft = ?, reply_recipients = ?, sent_error = ''
+            WHERE mail_id = ?
+            """,
+            (draft, reply_recipients, mail_id),
+        )
+        return cursor.rowcount > 0
+
+
+def save_suggestion_send_result(database_path: Path, mail_id: str, error: str = "") -> None:
+    with connect(database_path) as db:
+        if error:
+            db.execute(
+                """
+                UPDATE suggestions
+                SET sent_error = ?
+                WHERE mail_id = ?
+                """,
+                (error, mail_id),
+            )
+            return
+
+        db.execute(
+            """
+            UPDATE suggestions
+            SET sent_at = CURRENT_TIMESTAMP, sent_error = ''
+            WHERE mail_id = ?
+            """,
+            (mail_id,),
+        )
+
+
 def save_generation_job(database_path: Path, mail_id: str, status: str, error: str = "") -> None:
     with connect(database_path) as db:
         db.execute(
@@ -218,6 +261,9 @@ def list_messages(database_path: Path) -> list[dict[str, Any]]:
                 s.draft,
                 s.provider,
                 s.model,
+                s.reply_recipients,
+                s.sent_at,
+                s.sent_error,
                 s.category,
                 s.confidence,
                 s.probable_problem,
@@ -250,6 +296,9 @@ def get_message(database_path: Path, mail_id: str) -> dict[str, Any] | None:
                 s.draft,
                 s.provider,
                 s.model,
+                s.reply_recipients,
+                s.sent_at,
+                s.sent_error,
                 s.category,
                 s.confidence,
                 s.probable_problem,
@@ -273,6 +322,9 @@ def get_message(database_path: Path, mail_id: str) -> dict[str, Any] | None:
             return None
         message = _normalize_suggestion_row(dict(row))
         message["attachments_list"] = list_message_attachments(database_path, mail_id)
+        message["image_attachments_list"] = [
+            attachment for attachment in message["attachments_list"] if is_image_attachment(attachment)
+        ]
         return message
 
 
@@ -280,14 +332,27 @@ def list_message_attachments(database_path: Path, mail_id: str) -> list[dict[str
     with connect(database_path) as db:
         rows = db.execute(
             """
-            SELECT filename, content_type, path, size
+            SELECT id, filename, content_type, path, size
             FROM message_attachments
             WHERE mail_id = ?
             ORDER BY id
             """,
             (mail_id,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [_normalize_attachment_row(dict(row)) for row in rows]
+
+
+def get_message_attachment(database_path: Path, mail_id: str, attachment_id: int) -> dict[str, Any] | None:
+    with connect(database_path) as db:
+        row = db.execute(
+            """
+            SELECT id, filename, content_type, path, size
+            FROM message_attachments
+            WHERE mail_id = ? AND id = ?
+            """,
+            (mail_id, attachment_id),
+        ).fetchone()
+        return _normalize_attachment_row(dict(row)) if row else None
 
 
 def messages_without_suggestions(database_path: Path) -> list[dict[str, Any]]:
@@ -329,5 +394,14 @@ def _normalize_suggestion_row(row: dict[str, Any]) -> dict[str, Any]:
     row["next_checks_list"] = _json_loads(row.get("next_checks"), [])
     row["sources_list"] = _json_loads(row.get("sources"), [])
     row.setdefault("attachments_list", [])
+    row["image_attachments_list"] = [
+        attachment for attachment in row["attachments_list"] if is_image_attachment(attachment)
+    ]
     row["generation_in_progress"] = row.get("generation_status") in {"queued", "running"}
+    return row
+
+
+def _normalize_attachment_row(row: dict[str, Any]) -> dict[str, Any]:
+    row["is_image"] = is_image_attachment(row)
+    row["size_label"] = format_size(int(row.get("size") or 0))
     return row

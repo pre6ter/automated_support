@@ -37,9 +37,26 @@
       <article class="panel">
         <h2>Письмо</h2>
         {% if message.attachments_list %}
-          <div class="attachments-list">
+          <div class="attachments-grid">
             {% for attachment in message.attachments_list %}
-              <span class="badge">скриншот: {{ attachment.filename }}</span>
+              {% set attachment_url = url_for('main.show_attachment', mail_id=message.mail_id, attachment_id=attachment.id) %}
+              <article class="attachment-card">
+                {% if attachment.is_image %}
+                  <a href="{{ attachment_url }}" target="_blank" rel="noopener">
+                    <img src="{{ attachment_url }}" alt="{{ attachment.filename }}">
+                  </a>
+                {% else %}
+                  <div class="file-preview">Файл</div>
+                {% endif %}
+                <div class="attachment-meta">
+                  <strong>{{ attachment.filename }}</strong>
+                  <span>{{ attachment.content_type }} · {{ attachment.size_label }}</span>
+                </div>
+                <div class="attachment-actions">
+                  <a href="{{ attachment_url }}" target="_blank" rel="noopener">Открыть</a>
+                  <a href="{{ attachment_url }}?download=1">Скачать</a>
+                </div>
+              </article>
             {% endfor %}
           </div>
         {% endif %}
@@ -87,7 +104,26 @@
             </details>
           {% endif %}
 
-          <textarea readonly>{{ message.draft }}</textarea>
+          {% if message.sent_error %}
+            <p class="delivery-status failed">Последняя ошибка отправки: {{ message.sent_error }}</p>
+          {% elif message.sent_at %}
+            <p class="delivery-status ok">Последняя отправка: {{ message.sent_at }}</p>
+          {% endif %}
+
+          <form class="reply-form" method="post" action="{{ url_for('main.update_reply', mail_id=message.mail_id) }}">
+            <label class="form-field">
+              Получатели
+              <input type="text" name="reply_recipients" value="{{ message.reply_recipients }}" required>
+            </label>
+            <label class="form-field">
+              Текст ответа
+              <textarea name="draft" required>{{ message.draft }}</textarea>
+            </label>
+            <div class="button-row">
+              <button type="submit" name="action" value="save" class="secondary">Сохранить правки</button>
+              <button type="submit" name="action" value="send">Отправить письмо</button>
+            </div>
+          </form>
           <p class="muted">Сгенерировано через {{ message.provider }} / {{ message.model }}</p>
         {% else %}
           <p>Ответ ещё не создан.</p>

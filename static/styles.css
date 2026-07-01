@@ -233,6 +233,58 @@ button.secondary:hover {
   margin: 0 0 12px;
 }
 
+.attachments-grid {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.attachment-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.attachment-card img,
+.file-preview {
+  width: 100%;
+  max-height: 240px;
+  border-radius: 10px;
+  background: #f3f4f6;
+  object-fit: contain;
+}
+
+.file-preview {
+  display: grid;
+  min-height: 96px;
+  place-items: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.attachment-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.attachment-meta span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.attachment-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.attachment-actions a {
+  color: var(--primary);
+  font-weight: 700;
+  text-decoration: none;
+}
+
 .diagnostic-summary p {
   margin: 12px 0 0;
 }
@@ -300,6 +352,48 @@ textarea {
 
 textarea {
   resize: vertical;
+}
+
+input[type="text"] {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  font: 15px/1.4 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 12px 14px;
+}
+
+.reply-form {
+  display: grid;
+  gap: 12px;
+}
+
+.form-field {
+  display: grid;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.delivery-status {
+  border-radius: 12px;
+  font-weight: 700;
+  padding: 12px 14px;
+}
+
+.delivery-status.ok {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.delivery-status.failed {
+  background: #fef2f2;
+  color: #991b1b;
 }
 
 .chat-panel {
