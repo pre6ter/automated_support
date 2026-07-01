@@ -281,8 +281,8 @@ def chat_ask():
             {
                 "ok": True,
                 "conversation_id": conversation_id,
-                "user": user_message,
-                "assistant": assistant_message,
+                "user": _public_chat_message(user_message),
+                "assistant": _public_chat_message(assistant_message),
             }
         )
     return redirect(url_for("main.chat", conversation_id=conversation_id))
@@ -502,3 +502,15 @@ def _own_email_addresses(config: object) -> set[str]:
         )
         if str(address).strip()
     }
+
+
+def _public_chat_message(message: dict[str, object]) -> dict[str, object]:
+    public_message = {
+        "id": message.get("id"),
+        "role": message.get("role"),
+        "content": message.get("content") or "",
+        "attachments": message.get("attachments") or [],
+    }
+    if g.user and g.user.get("role") == "admin":
+        public_message["sources"] = message.get("sources") or []
+    return public_message

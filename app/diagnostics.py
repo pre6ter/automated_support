@@ -94,7 +94,7 @@ def _chat_diagnostic_text(question: str, history: list[dict[str, Any]]) -> str:
 
     lines = ["Предыдущий контекст чата:"]
     for item in recent_messages:
-        role = "Пользователь" if item.get("role") == "user" else "Ассистент"
+        role = "Пользователь" if item.get("role") == "user" else "BAIER PRO"
         content = str(item.get("content") or "").strip()
         if content:
             lines.append(f"{role}: {content[:1200]}")
