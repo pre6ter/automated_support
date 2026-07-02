@@ -775,9 +775,8 @@ class DomainKnowledgeTest(unittest.TestCase):
         self.assertIn("user_direction", prompt)
         self.assertIn("ExDirection", prompt)
         self.assertIn("User.num -> user.num", prompt)
-        self.assertIn("Товарная группа", prompt)
-        self.assertIn("category_id", prompt)
-        self.assertIn("tg", prompt)
+        self.assertNotIn("Товарная группа, категория, ТГ", prompt)
+        self.assertNotIn("category_id", prompt)
 
     def test_offer_number_expands_repository_terms(self) -> None:
         message = {
